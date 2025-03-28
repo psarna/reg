@@ -7,3 +7,7 @@ description = "OCI distribution registry"
 
 [dependencies]
 axum = "0.8.1"
+serde_json = "1.0.140"
+tokio = { version = "1.44.1", features = ["rt-multi-thread"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
