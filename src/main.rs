@@ -8,6 +8,9 @@ use axum::{
 use std::{collections::HashMap, net::SocketAddr};
 use tokio::net::TcpListener;
 
+mod bootstrap;
+use crate::bootstrap::Bootstrapper;
+
 #[derive(Clone, Default)]
 struct AppState {}
 
