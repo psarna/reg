@@ -157,6 +157,19 @@ async fn get_upload_status_handler(
     StatusCode::NO_CONTENT
 }
 
+// Grand idea:
+// 1. reading manifests and blobs is compatible with docker distribution does
+// 2. on top of that, if you run with --bootstrap-db, it will first scan
+//    the whole bucket and put all manifest info into SQLite.
+// 3. then, it will treat SQLite as the first source of truth.
+// 4. then, additional features include:
+//    - listing all tags for a repo
+//    - listing all blobs for a repo
+//    - listing all manifests for a repo
+//    - listing all repos
+//    - listing all layers for a repo
+//    - etc
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().init();
