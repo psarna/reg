@@ -100,6 +100,58 @@ impl Registry {
         Ok(presigned_url)
     }
 
+    pub async fn list_tags(&self, repo: &str) -> Result<Value> {
+        let tags_prefix = format!("docker/registry/v2/repositories/{repo}/_manifests/tags");
+        let mut tags = Vec::new();
+        let mut continuation_token = None;
+
+        loop {
+            let list_response = match continuation_token {
+                Some(token) => self
+                    .s3_client
+                    .list_objects_v2()
+                    .bucket(&self.bucket)
+                    .prefix(&tags_prefix)
+                    .continuation_token(token),
+                None => self
+                    .s3_client
+                    .list_objects_v2()
+                    .bucket(&self.bucket)
+                    .prefix(&tags_prefix),
+            }
+            .send()
+            .await?;
+
+            for object in list_response.contents() {
+                if let Some(key) = object.key() {
+                    if key.ends_with("current/link") {
+                        let tag = key
+                            .strip_prefix(&tags_prefix)
+                            .unwrap_or("")
+                            .strip_suffix("/current/link")
+                            .unwrap_or("")
+                            .split('/')
+                            .nth(1)
+                            .unwrap_or("")
+                            .to_string();
+                        tags.push(tag);
+                    }
+                }
+            }
+
+            if let Some(is_truncated) = list_response.is_truncated() {
+                if !is_truncated {
+                    break;
+                }
+            }
+            continuation_token = list_response.next_continuation_token().map(String::from);
+        }
+        Ok(serde_json::json!({
+            "name": repo,
+            "tags": tags,
+        }))
+    }
+
     async fn get_manifest_from_sha(&self, sha: &str) -> Result<Value> {
         let blob_key = format!("docker/registry/v2/blobs/sha256/{}/{}/data", &sha[..2], sha);
 

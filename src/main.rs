@@ -24,7 +24,7 @@ async fn root_handler() -> StatusCode {
     StatusCode::OK
 }
 
-fn parse_repo_ref(path: Vec<&str>, delimiter: &str) -> Option<(String, String)> {
+fn parse_repo_ref(path: &[&str], delimiter: &str) -> Option<(String, String)> {
     if let Some(delimiter) = path.iter().position(|&s| s == delimiter) {
         if delimiter > 0 && delimiter < path.len() - 1 {
             let name = path[0..delimiter].join("/");
@@ -38,17 +38,8 @@ fn parse_repo_ref(path: Vec<&str>, delimiter: &str) -> Option<(String, String)> 
 async fn path_handler(State(state): State<AppState>, Path(path): Path<String>) -> Response {
     let segments = path.split('/').collect::<Vec<&str>>();
 
-    if let Some((name, reference)) = parse_repo_ref(segments.clone(), "manifests") {
+    if let Some((name, reference)) = parse_repo_ref(&segments, "manifests") {
         tracing::info!("Parsed repo: {}, ref: {}", name, reference);
-        /*
-        let manifest_json = state
-            .registry
-            .get_manifest(&name, &reference)
-            .await
-            .map(Json)
-            .map_err(|_| StatusCode::NOT_FOUND)?;
-            tracing::info!("Manifest JSON: {:?}", manifest_json);
-        */
         match state.registry.get_manifest(&name, &reference).await {
             Ok(manifest_json) => {
                 let mut headers = HeaderMap::new();
@@ -69,7 +60,7 @@ async fn path_handler(State(state): State<AppState>, Path(path): Path<String>) -
                 return Err::<Json<Value>, StatusCode>(StatusCode::NOT_FOUND).into_response();
             }
         }
-    } else if let Some((name, sha)) = parse_repo_ref(segments.clone(), "blobs") {
+    } else if let Some((name, sha)) = parse_repo_ref(&segments, "blobs") {
         tracing::info!("Parsed repo: {}, sha: {}", name, sha);
         match state.registry.get_blob_redirect(&sha).await {
             Ok(blob_redirect) => {
@@ -89,6 +80,22 @@ async fn path_handler(State(state): State<AppState>, Path(path): Path<String>) -
             }
             Err(e) => {
                 tracing::error!("Error getting blob redirect: {:?}", e);
+                return Err::<Json<Value>, StatusCode>(StatusCode::NOT_FOUND).into_response();
+            }
+        }
+    } else if let Some((name, cmd)) = parse_repo_ref(&segments, "tags") {
+        tracing::info!("Parsed repo: {}, cmd: {}", name, cmd);
+        if cmd != "list" {
+            tracing::info!("Unsupported command: {}", cmd);
+            return Err::<Json<Value>, StatusCode>(StatusCode::NOT_FOUND).into_response();
+        }
+        tracing::info!("Listing tags for repo: {}", name);
+        match state.registry.list_tags(&name).await {
+            Ok(tags) => {
+                return Json(tags).into_response();
+            }
+            Err(e) => {
+                tracing::error!("Error listing tags: {:?}", e);
                 return Err::<Json<Value>, StatusCode>(StatusCode::NOT_FOUND).into_response();
             }
         }
