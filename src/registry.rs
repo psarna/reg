@@ -1,42 +1,32 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::config::BehaviorVersion;
-use futures::future::join_all;
-use rusqlite::{Connection, params};
+use aws_sdk_s3::presigning::PresigningConfig;
+use rusqlite::Connection;
 use serde_json::Value;
 
-struct LayerInfo {
-    repo: String,
-    tag: String,
-    layer_no: i32,
-    layer_hash: String,
-    layer_size: i64,
-}
-
 #[derive(Clone, Debug)]
-pub struct Bootstrapper {
+pub struct Registry {
     bucket: String,
     db_path: String,
-    batch_size: usize,
     s3_client: S3Client,
 }
 
-impl Bootstrapper {
-    async fn new(bucket: &str, db_path: &str, batch_size: usize) -> Result<Self> {
+impl Registry {
+    pub async fn new(bucket: &str, db_path: &str) -> Result<Self> {
         let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
         let s3_client = S3Client::new(&config);
 
-        let scraper = Self {
+        let registry = Self {
             bucket: bucket.to_string(),
             db_path: db_path.to_string(),
-            batch_size,
             s3_client,
         };
 
-        scraper.setup_db()?;
+        registry.setup_db()?;
 
-        tracing::debug!("Database initialized at {db_path}");
-        Ok(scraper)
+        tracing::info!("Database initialized at {db_path}");
+        Ok(registry)
     }
 
     fn setup_db(&self) -> Result<()> {
@@ -56,10 +46,9 @@ impl Bootstrapper {
         Ok(())
     }
 
-    async fn get_sha(&self, repo: &str, tag: &str) -> Option<String> {
-        let meta_key = format!(
-            "docker/registry/v2/repositories/forge/v1/{repo}/_manifests/tags/{tag}/current/link"
-        );
+    async fn get_sha(&self, repo: &str, tag: &str) -> Result<String> {
+        let meta_key =
+            format!("docker/registry/v2/repositories/{repo}/_manifests/tags/{tag}/current/link");
 
         match self
             .s3_client
@@ -70,18 +59,48 @@ impl Bootstrapper {
             .await
         {
             Ok(response) => {
-                let body = response.body.collect().await.ok()?;
-                let content = String::from_utf8(body.into_bytes().to_vec()).ok()?;
-                Some(content.trim().split(':').nth(1)?.to_string())
+                let body = response.body.collect().await?;
+                let content = String::from_utf8(body.into_bytes().to_vec())?;
+                Ok(content
+                    .trim()
+                    .split(':')
+                    .nth(1)
+                    .context("incorrect sha format")?
+                    .to_string())
             }
             Err(e) => {
-                tracing::debug!("Error getting sha: {e:?}");
-                None
+                tracing::error!("Error getting sha: {e:?}");
+                Err(e.into())
             }
         }
     }
 
-    async fn get_manifest(&self, sha: &str) -> Option<Value> {
+    pub async fn get_manifest(&self, repo: &str, tag: &str) -> Result<Value> {
+        let sha = self.get_sha(repo, tag).await?;
+        self.get_manifest_from_sha(&sha).await
+    }
+
+    pub async fn get_blob_redirect(&self, sha: &str) -> Result<String> {
+        let sha = sha.strip_prefix("sha256:").unwrap_or(sha);
+        let blob_key = format!("docker/registry/v2/blobs/sha256/{}/{}/data", &sha[..2], sha);
+        let presigned_url = self
+            .s3_client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(blob_key)
+            .presigned(
+                PresigningConfig::builder()
+                    .expires_in(std::time::Duration::from_secs(60 * 5))
+                    .build()
+                    .expect("less than one week"),
+            )
+            .await?
+            .uri()
+            .to_string();
+        Ok(presigned_url)
+    }
+
+    async fn get_manifest_from_sha(&self, sha: &str) -> Result<Value> {
         let blob_key = format!("docker/registry/v2/blobs/sha256/{}/{}/data", &sha[..2], sha);
 
         match self
@@ -93,14 +112,18 @@ impl Bootstrapper {
             .await
         {
             Ok(response) => {
-                let body = response.body.collect().await.ok()?;
-                let blob_data = String::from_utf8(body.into_bytes().to_vec()).ok()?;
-                serde_json::from_str(&blob_data).ok()
+                let body = response.body.collect().await?;
+                let blob_data = String::from_utf8(body.into_bytes().to_vec())?;
+                Ok(serde_json::from_str(&blob_data)?)
             }
-            Err(_) => None,
+            Err(e) => {
+                tracing::error!("Error getting manifest: {e:?}");
+                Err(e.into())
+            }
         }
     }
 
+    /*
     async fn process_repo_tag(&self, repo: &str, tag: &str) -> Vec<LayerInfo> {
         let mut layer_info = Vec::new();
 
@@ -132,6 +155,7 @@ impl Bootstrapper {
         }
         layer_info
     }
+
 
     fn save_to_db(&self, layer_data: &[LayerInfo]) -> Result<()> {
         if layer_data.is_empty() {
@@ -182,4 +206,5 @@ impl Bootstrapper {
         }
         Ok(())
     }
+    */
 }
