@@ -2,13 +2,14 @@ use anyhow::{Context, Result};
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::config::BehaviorVersion;
 use aws_sdk_s3::presigning::PresigningConfig;
-use rusqlite::Connection;
 use serde_json::Value;
+
+use crate::database::Database;
 
 #[derive(Clone, Debug)]
 pub struct Registry {
     bucket: String,
-    db_path: String,
+    db: Database,
     s3_client: S3Client,
 }
 
@@ -16,34 +17,17 @@ impl Registry {
     pub async fn new(bucket: &str, db_path: &str) -> Result<Self> {
         let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
         let s3_client = S3Client::new(&config);
+        let db = Database::new(db_path)?;
+        db.setup()?;
 
         let registry = Self {
             bucket: bucket.to_string(),
-            db_path: db_path.to_string(),
+            db: db,
             s3_client,
         };
 
-        registry.setup_db()?;
-
         tracing::info!("Database initialized at {db_path}");
         Ok(registry)
-    }
-
-    fn setup_db(&self) -> Result<()> {
-        let conn = Connection::open(&self.db_path)?;
-        conn.pragma_update(None, "journal_mode", "wal")?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS layers (
-                repo TEXT, 
-                tag TEXT, 
-                layer_no INTEGER, 
-                layer_hash TEXT, 
-                layer_size INTEGER, 
-                PRIMARY KEY (repo, tag, layer_no)
-            )",
-            [],
-        )?;
-        Ok(())
     }
 
     async fn get_sha(&self, repo: &str, tag: &str) -> Result<String> {

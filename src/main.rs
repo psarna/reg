@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
+mod database;
 mod registry;
 use crate::registry::Registry;
 
