@@ -60,8 +60,18 @@ impl Registry {
     }
 
     pub async fn get_manifest(&self, repo: &str, tag: &str) -> Result<Value> {
+        if let Ok(Some(manifest)) = self.db.get_manifest(repo, tag) {
+            if !manifest.is_empty() {
+                tracing::info!("Manifest found in database: {:?}", manifest);
+                return Ok(serde_json::from_str(&manifest)?);
+            }
+        }
         let sha = self.get_sha(repo, tag).await?;
-        self.get_manifest_from_sha(&sha).await
+        let manifest = self.get_manifest_from_sha(&sha).await?;
+        if let Err(e) = self.db.save_manifest(repo, tag, &manifest.to_string()) {
+            tracing::error!("Error saving manifest to database: {e:?}");
+        }
+        Ok(manifest)
     }
 
     pub async fn get_blob_redirect(&self, sha: &str) -> Result<String> {
@@ -85,6 +95,16 @@ impl Registry {
     }
 
     pub async fn list_tags(&self, repo: &str) -> Result<Value> {
+        if let Ok(tags) = self.db.list_tags(repo) {
+            if !tags.is_empty() {
+                tracing::info!("Tags found in database: {:?}", tags);
+                return Ok(serde_json::json!({
+                    "name": repo,
+                    "tags": tags,
+                }));
+            }
+        }
+
         let tags_prefix = format!("docker/registry/v2/repositories/{repo}/_manifests/tags");
         let mut tags = Vec::new();
         let mut continuation_token = None;
@@ -130,6 +150,11 @@ impl Registry {
             }
             continuation_token = list_response.next_continuation_token().map(String::from);
         }
+
+        if let Err(e) = self.db.save_tags(repo, &tags) {
+            tracing::error!("Error saving tags to database: {e:?}");
+        }
+
         Ok(serde_json::json!({
             "name": repo,
             "tags": tags,
