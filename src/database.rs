@@ -1,12 +1,12 @@
 use anyhow::Result;
 use rusqlite::Connection;
-use std::sync::{Arc, RwLock};
 use serde_json::Value;
+use std::sync::RwLock;
 
 #[derive(Debug)]
 pub struct Database {
     db_path: String,
-    conn: Arc<RwLock<Connection>>,
+    conn: RwLock<Connection>,
 }
 
 unsafe impl Sync for Database {}
@@ -14,21 +14,20 @@ unsafe impl Send for Database {}
 
 impl Clone for Database {
     fn clone(&self) -> Self {
-        // Try opening a new connection, use the existing one if it fails
         let conn = match Connection::open(&self.db_path) {
-            Ok(conn) => Arc::new(RwLock::new(conn)),
-            Err(_) => Arc::clone(&self.conn),
+            Ok(conn) => RwLock::new(conn),
+            Err(_) => panic!("failed to open a new connection to the database"),
         };
         Database {
             db_path: self.db_path.clone(),
-            conn: conn,
+            conn,
         }
     }
 }
 
 impl Database {
     pub fn new(db_path: &str) -> Result<Self> {
-        let conn = Arc::new(RwLock::new(Connection::open(db_path)?));
+        let conn = RwLock::new(Connection::open(db_path)?);
         Ok(Database {
             db_path: db_path.to_string(),
             conn,
@@ -36,7 +35,7 @@ impl Database {
     }
 
     pub fn setup(&self) -> Result<()> {
-        let conn = self.conn.write().unwrap();
+        let conn = self.conn.read().unwrap();
         conn.pragma_update(None, "journal_mode", "wal")?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS repos (
@@ -106,7 +105,7 @@ impl Database {
         let conn = self.conn.read().unwrap();
         let repository_id: i64 = conn.query_row(
             "SELECT repository_id FROM repos WHERE name = ?",
-            &[repo],
+            [repo],
             |row| row.get(0),
         )?;
         let tag_id: i64 = conn.query_row(
@@ -122,20 +121,18 @@ impl Database {
         Ok(Some(manifest_json))
     }
 
-    pub fn save_manifest(
-        &self,
-        repo: &str,
-        tag: &str,
-        manifest_json: &str,
-    ) -> Result<()> {
-        let conn = self.conn.write().unwrap();
-        conn.execute("INSERT OR IGNORE INTO repos (name) VALUES (?)", &[repo])?;
+    pub fn save_manifest(&self, repo: &str, tag: &str, manifest_json: &str) -> Result<()> {
+        let conn = self.conn.read().unwrap();
+        conn.execute("INSERT OR IGNORE INTO repos (name) VALUES (?)", [repo])?;
         let repository_id: i64 = conn.query_row(
             "SELECT repository_id FROM repos WHERE name = ?",
-            &[repo],
+            [repo],
             |row| row.get(0),
         )?;
-        conn.execute("INSERT OR IGNORE INTO tags (repository_id, name) VALUES (?, ?)", (&repository_id, tag))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO tags (repository_id, name) VALUES (?, ?)",
+            (&repository_id, tag),
+        )?;
         let tag_id: i64 = conn.query_row(
             "SELECT tag_id FROM tags WHERE repository_id = ? AND name = ?",
             (&repository_id, tag),
@@ -162,7 +159,7 @@ impl Database {
     pub fn list_tags(&self, repo: &str) -> Result<Vec<String>> {
         let conn = self.conn.read().unwrap();
         let mut stmt = conn.prepare("SELECT name FROM tags WHERE repository_id = (SELECT repository_id FROM repos WHERE name = ?)")?;
-        let tags_iter = stmt.query_map(&[repo], |row| row.get(0))?;
+        let tags_iter = stmt.query_map([repo], |row| row.get(0))?;
 
         let mut tags = Vec::new();
         for tag in tags_iter {
@@ -172,11 +169,11 @@ impl Database {
     }
 
     pub fn save_tags(&self, repo: &str, tags: &[String]) -> Result<()> {
-        let conn = self.conn.write().unwrap();
-        conn.execute("INSERT OR IGNORE INTO repos (name) VALUES (?)", &[repo])?;
+        let conn = self.conn.read().unwrap();
+        conn.execute("INSERT OR IGNORE INTO repos (name) VALUES (?)", [repo])?;
         let repository_id: i64 = conn.query_row(
             "SELECT repository_id FROM repos WHERE name = ?",
-            &[repo],
+            [repo],
             |row| row.get(0),
         )?;
         for tag in tags {

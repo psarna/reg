@@ -22,7 +22,7 @@ impl Registry {
 
         let registry = Self {
             bucket: bucket.to_string(),
-            db: db,
+            db,
             s3_client,
         };
 
