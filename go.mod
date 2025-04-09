@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.29.13
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.79.1
 	github.com/gorilla/mux v1.8.1
+	github.com/mattn/go-sqlite3 v1.14.27
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/spf13/cobra v1.9.1

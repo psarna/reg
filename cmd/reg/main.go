@@ -35,6 +35,17 @@ func main() {
 	}
 }
 
+const splash = `
+ $$$$$$\   $$$$$$\   $$$$$$\  
+$$  __$$\ $$  __$$\ $$  __$$\ 
+$$ |  \__|$$$$$$$$ |$$ /  $$ |
+$$ |      $$   ____|$$ |  $$ |
+$$ |      \$$$$$$$\ \$$$$$$$ |
+\__|       \_______| \____$$ |
+                    $$\   $$ |
+                    \$$$$$$  |
+                     \______/ `
+
 func runServe(cmd *cobra.Command, args []string) {
 	bucket, _ := cmd.Flags().GetString("bucket")
 
@@ -48,6 +59,8 @@ func runServe(cmd *cobra.Command, args []string) {
 		Level: slog.LevelDebug,
 	})))
 	port := ":2137"
+	fmt.Println(splash)
+	fmt.Println()
 	fmt.Printf("Server starting on %s with bucket '%s'...\n", port, bucket)
 	log.Fatal(http.ListenAndServe(port, r))
 }
