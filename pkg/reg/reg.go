@@ -300,14 +300,86 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("Uploaded manifest for %s with reference %s", name, reference)
 }
 
+type tags struct {
+	Name string   `json:"name"`
+	Tags []string `json:"tags"`
+}
+
 func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
 
-	// TODO: try the db, otherwise list S3 objects from given prefix that match */current/link
+	readyTags, err := h.db.ListTags(name)
+	if err == nil {
+		slog.Debug("retrieved tags from database", "name", name, "tags", readyTags)
+		marshaledTags, err := json.Marshal(tags{
+			Name: name,
+			Tags: readyTags,
+		})
+		if err != nil {
+			slog.Error("error marshalling tags", "error", err)
+			http.Error(w, fmt.Sprintf("error marshalling tags: %v", err), http.StatusInternalServerError)
+			return
+		}
+		_, err = w.Write(marshaledTags)
+		if err != nil {
+			slog.Error("error writing tags response", "error", err)
+			http.Error(w, fmt.Sprintf("error writing tags response: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
 
-	slog.Warn("list tags not implemented")
-	fmt.Fprintf(w, `{"name":"%s", "tags":["tag1", "tag2", "tag3"]}`, name)
+	var repoTags []string
+	var continuationToken *string
+	prefix := fmt.Sprintf("docker/registry/v2/repositories/%s/_manifests/tags/", name)
+	for {
+		req, err := h.s3Client.ListObjectsV2(r.Context(), &s3.ListObjectsV2Input{
+			Bucket:            &h.bucket,
+			Prefix:            &prefix,
+			ContinuationToken: continuationToken,
+		})
+		if err != nil {
+			slog.Error("error listing S3 objects", "error", err)
+			http.Error(w, fmt.Sprintf("error listing S3 objects: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Process results from this page
+		for _, obj := range req.Contents {
+			if strings.HasSuffix(*obj.Key, "current/link") {
+				tag := strings.TrimSuffix(strings.TrimPrefix(*obj.Key, fmt.Sprintf("docker/registry/v2/repositories/%s/_manifests/tags/", name)), "/current/link")
+				repoTags = append(repoTags, tag)
+			}
+		}
+
+		// Break if no more pages, otherwise continue with next token
+		if req.IsTruncated == nil || !*req.IsTruncated {
+			break
+		}
+		continuationToken = req.NextContinuationToken
+	}
+
+	err = h.db.PutTags(name, repoTags)
+	if err != nil {
+		slog.Error("error storing tags in database", "error", err)
+	}
+
+	marshaledTags, err := json.Marshal(tags{
+		Name: name,
+		Tags: repoTags,
+	})
+	if err != nil {
+		slog.Error("error marshalling tags", "error", err)
+		http.Error(w, fmt.Sprintf("error marshalling tags: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, err = w.Write(marshaledTags)
+	if err != nil {
+		slog.Error("error writing tags response", "error", err)
+		http.Error(w, fmt.Sprintf("error writing tags response: %v", err), http.StatusInternalServerError)
+		return
+	}
 }
 
 func (h *Handler) listTagsPaginated(w http.ResponseWriter, r *http.Request) {

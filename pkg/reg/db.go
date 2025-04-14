@@ -164,3 +164,54 @@ func (r *RegistryDB) PutManifest(repo string, tag string, manifestBytes string, 
 
 	return nil
 }
+
+func (r *RegistryDB) ListTags(name string) ([]string, error) {
+	query := `SELECT tags.name FROM tags
+		JOIN repos ON repos.repository_id = tags.repository_id
+		WHERE repos.name = ?`
+	rows, err := r.db.Query(query, name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tags: %w", err)
+	}
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, fmt.Errorf("failed to scan tag: %w", err)
+		}
+		tags = append(tags, tag)
+	}
+
+	return tags, nil
+}
+
+func (r *RegistryDB) PutTags(repo string, tags []string) error {
+	query := `INSERT INTO repos (name) VALUES (?) ON CONFLICT(name) DO NOTHING`
+	_, err := r.db.Exec(query, repo)
+	if err != nil {
+		return fmt.Errorf("failed to register repo: %w", err)
+	}
+
+	query = `SELECT repository_id FROM repos WHERE name = ?`
+	row := r.db.QueryRow(query, repo)
+	var repoID int
+	err = row.Scan(&repoID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("repo not found: %w", err)
+		}
+		return fmt.Errorf("failed to get repo id: %w", err)
+	}
+
+	for _, tag := range tags {
+		query = `INSERT INTO tags (repository_id, name) VALUES (?, ?) ON CONFLICT(repository_id, name) DO NOTHING`
+		_, err = r.db.Exec(query, repoID, tag)
+		if err != nil {
+			return fmt.Errorf("failed to register tag: %w", err)
+		}
+	}
+
+	return nil
+}
