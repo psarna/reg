@@ -3,7 +3,10 @@ package reg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 
@@ -98,6 +101,10 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 	digest := vars["digest"]
 	presignedURL, err := h.registry.getBlobRedirect(r.Context(), name, digest, r.Method)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			http.Error(w, fmt.Sprintf("blob not found: %v", err), http.StatusNotFound)
+			return
+		}
 		slog.Error("error getting blob redirect", "error", err)
 		http.Error(w, fmt.Sprintf("error getting blob redirect: %v", err), http.StatusInternalServerError)
 		return
@@ -113,6 +120,10 @@ func (h *Handler) getManifest(w http.ResponseWriter, r *http.Request) {
 	manifest, manifestBytes, err := h.registry.getManifest(r.Context(), name, reference)
 	if err != nil {
 		slog.Error("error getting manifest", "error", err)
+		if errors.Is(err, fs.ErrNotExist) {
+			http.Error(w, fmt.Sprintf("manifest not found: %v", err), http.StatusNotFound)
+			return
+		}
 		http.Error(w, fmt.Sprintf("error getting manifest: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -171,9 +182,21 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request) {
 	name := vars["name"]
 	reference := vars["reference"]
 
+	manifestBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		slog.Error("error reading manifest body", "error", err)
+		http.Error(w, fmt.Sprintf("error reading manifest body: %v", err), http.StatusInternalServerError)
+		return
+	}
+	err = h.registry.putManifest(r.Context(), name, reference, manifestBytes)
+	if err != nil {
+		slog.Error("error putting manifest", "error", err)
+		http.Error(w, fmt.Sprintf("error putting manifest: %v", err), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/manifests/%s", name, reference))
 	w.WriteHeader(http.StatusCreated)
-	fmt.Printf("Uploaded manifest for %s with reference %s", name, reference)
+	fmt.Printf("Put manifest for %s with reference %s", name, reference)
 }
 
 type tags struct {
