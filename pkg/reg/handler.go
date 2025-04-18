@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
 
@@ -39,21 +40,21 @@ func NewRouter(ctx context.Context, bucket string) (*mux.Router, error) {
 	// end-3: Get manifest
 	apiRouter.Handle("/{name:.*}/manifests/{reference}", http.HandlerFunc(h.getManifest)).Methods("GET", "HEAD")
 
-	// end-4a: Start upload
-	apiRouter.Handle("/{name:.*}/blobs/uploads/", http.HandlerFunc(h.startUpload)).Methods("POST")
-
 	// end-4b: Start upload with digest
 	apiRouter.Handle("/{name:.*}/blobs/uploads/", http.HandlerFunc(h.startUploadWithDigest)).
 		Methods("POST").
 		Queries("digest", "{digest}")
 
-	// end-5: Upload chunk
-	apiRouter.Handle("/{name:.*}/blobs/uploads/{reference}", http.HandlerFunc(h.uploadChunk)).Methods("PATCH")
+	// end-4a: Start upload
+	apiRouter.Handle("/{name:.*}/blobs/uploads/", http.HandlerFunc(h.startUpload)).Methods("POST")
 
 	// end-6: Complete upload
 	apiRouter.Handle("/{name:.*}/blobs/uploads/{reference}", http.HandlerFunc(h.completeUpload)).
-		Methods("PUT").
+		Methods("PUT", "PATCH").
 		Queries("digest", "{digest}")
+
+	// end-5: Upload chunk
+	apiRouter.Handle("/{name:.*}/blobs/uploads/{reference}", http.HandlerFunc(h.uploadChunk)).Methods("PUT", "PATCH")
 
 	// end-7: Put manifest
 	apiRouter.Handle("/{name:.*}/manifests/{reference}", http.HandlerFunc(h.putManifest)).Methods("PUT")
@@ -141,19 +142,32 @@ func (h *Handler) getManifest(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) startUpload(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
+	uploadId := uuid.New()
 
-	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/uploads/123456", name))
+	w.Header().Set("Location", fmt.Sprintf("v2/%s/blobs/uploads/%s", name, uploadId))
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func parseContentRange(fRange string) (int64, int64, error) {
+	var startOffset, endOffset int64
+	_, err := fmt.Sscanf(fRange, "bytes=%d-%d", &startOffset, &endOffset)
+	if err != nil {
+		return 0, int64(1<<63 - 1), nil
+	}
+	// NOTICE: The endOffset is inclusive in the Content-Range header, but we need to
+	// convert it to exclusive for our internal representation.
+	endOffset++
+	return startOffset, endOffset, nil
 }
 
 func (h *Handler) startUploadWithDigest(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
-	digest := vars["digest"]
+	// TODO: support: digest := vars["digest"]
+	uploadId := uuid.New()
 
-	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/uploads/123456", name))
+	w.Header().Set("Location", fmt.Sprintf("v2/%s/blobs/uploads/%s", name, uploadId))
 	w.WriteHeader(http.StatusAccepted)
-	fmt.Printf("Started upload for %s with digest %s", name, digest)
 }
 
 func (h *Handler) uploadChunk(w http.ResponseWriter, r *http.Request) {
@@ -161,8 +175,24 @@ func (h *Handler) uploadChunk(w http.ResponseWriter, r *http.Request) {
 	name := vars["name"]
 	reference := vars["reference"]
 
-	w.Header().Set("Range", "0-100")
+	fRange := r.Header.Get("Content-Range")
+	startOffset, endOffset, err := parseContentRange(fRange)
+	if err != nil {
+		slog.Error("error parsing content range", "error", err)
+		http.Error(w, fmt.Sprintf("error parsing content range: %v", err), http.StatusBadRequest)
+		return
+	}
+	slog.Debug("uploadChunk", "ref", reference, "range", fRange)
+
+	n, err := h.registry.uploadChunk(r.Context(), name, reference, startOffset, endOffset-startOffset, r.Body)
+	if err != nil {
+		slog.Error("error uploading chunk", "error", err)
+		http.Error(w, fmt.Sprintf("error uploading chunk: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/uploads/%s", name, reference))
+	w.Header().Set("Range", fmt.Sprintf("bytes=%d-%d", startOffset, startOffset+n-1))
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -172,15 +202,22 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request) {
 	reference := vars["reference"]
 	digest := vars["digest"]
 
+	err := h.registry.completeUpload(r.Context(), name, reference, digest)
+	if err != nil {
+		slog.Error("error completing upload", "error", err)
+		http.Error(w, fmt.Sprintf("error completing upload: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/%s", name, digest))
 	w.WriteHeader(http.StatusCreated)
-	fmt.Printf("Completed upload for %s reference %s with digest %s", name, reference, digest)
 }
 
 func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
 	reference := vars["reference"]
+	slog.Warn("putManifest", "name", name, "reference", reference)
 
 	manifestBytes, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -196,7 +233,7 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/manifests/%s", name, reference))
 	w.WriteHeader(http.StatusCreated)
-	fmt.Printf("Put manifest for %s with reference %s", name, reference)
+	fmt.Printf("Put manifest for %s with reference %s\n", name, reference)
 }
 
 type tags struct {
