@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/psarna/reg/pkg/reg"
 	"github.com/spf13/cobra"
@@ -50,10 +52,20 @@ func runServe(cmd *cobra.Command, args []string) {
 	bucket, _ := cmd.Flags().GetString("bucket")
 
 	ctx := context.Background()
-	r, err := reg.NewRouter(ctx, bucket)
+	r, cleanup, err := reg.NewRouter(ctx, bucket)
 	if err != nil {
 		log.Fatalf("Failed to create router: %v", err)
 	}
+	defer cleanup()
+
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT)
+	go func() {
+		sig := <-signalChan
+		fmt.Printf("Received signal: %v, running cleanup\n", sig)
+		cleanup()
+		os.Exit(0)
+	}()
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
