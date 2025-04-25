@@ -197,6 +197,21 @@ func (r *RegistryDB) PutTags(repo string, tags []string) error {
 	return nil
 }
 
+func (r *RegistryDB) ListRepositories(continuationToken *string, n int) ([]string, *string, error) {
+	query := `SELECT repository FROM tags WHERE repository > ? LIMIT ?`
+	var repos []string
+	err := r.db.Select(&repos, query, continuationToken, n)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to list repositories: %w", err)
+	}
+
+	if len(repos) == 0 {
+		return nil, nil, nil
+	}
+
+	return repos, &repos[len(repos)-1], nil
+}
+
 func (r *RegistryDB) Close() error {
 	if err := r.db.Close(); err != nil {
 		return fmt.Errorf("failed to close database: %w", err)
