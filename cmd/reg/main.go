@@ -67,6 +67,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	defer registry.Close()
 
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT)
+	go func() {
+		sig := <-signalChan
+		fmt.Printf("Received signal: %v, running cleanup\n", sig)
+		registry.Close()
+		os.Exit(0)
+	}()
+
 	if bootstrap {
 		if err := registry.Bootstrap(ctx); err != nil {
 			slog.Error("Failed to bootstrap registry", "err", err)
@@ -79,15 +88,6 @@ func runServe(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatalf("Failed to create router: %v", err)
 	}
-
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, syscall.SIGINT)
-	go func() {
-		sig := <-signalChan
-		fmt.Printf("Received signal: %v, running cleanup\n", sig)
-		registry.Close()
-		os.Exit(0)
-	}()
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
