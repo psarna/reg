@@ -46,6 +46,17 @@ func initSQLite(path string) (*RegistryDB, error) {
 			media_type TEXT NOT NULL,
 			size INTEGER NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS upload_sessions (
+			upload_id TEXT PRIMARY KEY,
+			repository TEXT NOT NULL,
+			digest TEXT,
+			s3_upload_id TEXT,
+			s3_key TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+			total_size INTEGER,
+			uploaded_size INTEGER DEFAULT 0
+		);`,
 	}
 
 	for _, table := range tables {
@@ -216,6 +227,54 @@ func (r *RegistryDB) Exists(repo string, tag string) bool {
 	query := `SELECT 1 FROM tags WHERE repository = ? AND name = ?`
 	var dummy int
 	return r.db.Get(&dummy, query, repo, tag) == nil
+}
+
+func (r *RegistryDB) CreateUploadSession(uploadID, repository, s3Key string) error {
+	query := `INSERT INTO upload_sessions (upload_id, repository, s3_key) VALUES (?, ?, ?)`
+	_, err := r.db.Exec(query, uploadID, repository, s3Key)
+	if err != nil {
+		return fmt.Errorf("failed to create upload session: %w", err)
+	}
+	return nil
+}
+
+func (r *RegistryDB) UpdateUploadSession(uploadID, s3UploadID string, uploadedSize int64) error {
+	query := `UPDATE upload_sessions SET s3_upload_id = ?, uploaded_size = ?, last_activity = CURRENT_TIMESTAMP WHERE upload_id = ?`
+	_, err := r.db.Exec(query, s3UploadID, uploadedSize, uploadID)
+	if err != nil {
+		return fmt.Errorf("failed to update upload session: %w", err)
+	}
+	return nil
+}
+
+func (r *RegistryDB) GetUploadSession(uploadID string) (string, string, int64, error) {
+	query := `SELECT s3_upload_id, s3_key, uploaded_size FROM upload_sessions WHERE upload_id = ?`
+	var s3UploadID, s3Key string
+	var uploadedSize int64
+	err := r.db.QueryRow(query, uploadID).Scan(&s3UploadID, &s3Key, &uploadedSize)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("failed to get upload session: %w", err)
+	}
+	return s3UploadID, s3Key, uploadedSize, nil
+}
+
+func (r *RegistryDB) DeleteUploadSession(uploadID string) error {
+	query := `DELETE FROM upload_sessions WHERE upload_id = ?`
+	_, err := r.db.Exec(query, uploadID)
+	if err != nil {
+		return fmt.Errorf("failed to delete upload session: %w", err)
+	}
+	return nil
+}
+
+func (r *RegistryDB) GetStaleUploadSessions(maxAge string) ([]string, error) {
+	query := `SELECT upload_id FROM upload_sessions WHERE last_activity < datetime('now', ?)`
+	var uploadIDs []string
+	err := r.db.Select(&uploadIDs, query, maxAge)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stale upload sessions: %w", err)
+	}
+	return uploadIDs, nil
 }
 
 func (r *RegistryDB) Close() error {
