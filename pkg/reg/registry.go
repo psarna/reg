@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,6 +35,11 @@ func NewRegistry(ctx context.Context, bucket string) (*Registry, error) {
 	}
 	s3Client := s3.NewFromConfig(cfg)
 
+	// TODO: customize the uploads directory
+	if err := os.Mkdir("uploads", 0755); err != nil && !os.IsExist(err) {
+		return nil, fmt.Errorf("failed to create uploads directory: %w", err)
+	}
+
 	db, err := initSQLite("registry.db")
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize database: %w", err)
@@ -52,7 +59,7 @@ func (r *Registry) getBlobRedirect(ctx context.Context, name string, digest stri
 	}
 
 	blobKey := fmt.Sprintf("docker/registry/v2/blobs/%s/%s/%s/data", algo, hex[0:2], hex)
-	slog.Debug("getting blob", "name", name, "digest", digest, "blobKey", blobKey)
+	slog.Debug("getBlob", "name", name, "blobKey", blobKey, "method", method)
 
 	// TODO: small blob cache and direct retrieval for small blobs
 
@@ -79,7 +86,7 @@ func (r *Registry) getBlobRedirect(ctx context.Context, name string, digest stri
 			s3.WithPresignExpires(expires),
 		)
 	default:
-		return "", fmt.Errorf("Method not allowed: %s", http.StatusMethodNotAllowed)
+		return "", fmt.Errorf("Method not allowed: %s", method)
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to create presigned URL: %w", err)
@@ -184,6 +191,50 @@ func (r *Registry) putManifest(ctx context.Context, name string, reference strin
 		slog.Error("error storing manifest in database", "error", err)
 	}
 	return nil
+}
+
+func (r *Registry) uploadChunk(ctx context.Context, name string, reference string, offset int64, len int64, body io.ReadCloser) (int64, error) {
+	f, err := os.OpenFile(filepath.Join("uploads", reference), os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	_, err = f.Seek(offset, io.SeekStart)
+	if err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(f, body)
+	if err != nil {
+		return 0, err
+	}
+	if n < len {
+		return 0, err
+	}
+
+	return n, nil
+}
+
+func (r *Registry) completeUpload(ctx context.Context, name string, reference string, dig string) error {
+	f, err := os.OpenFile(filepath.Join("uploads", reference), os.O_RDWR, 0666)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sha, err := digest.Parse(dig)
+	if err != nil {
+		return err
+	}
+	hex := sha.Hex()
+	blobKey := fmt.Sprintf("docker/registry/v2/blobs/sha256/%s/%s/data", hex[0:2], hex)
+	slog.Debug("completing upload", "blobKey", blobKey)
+	_, err = r.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: &r.bucket,
+		Key:    &blobKey,
+		Body:   f,
+	})
+	// TODO: read what they need this _uploads thing for, atomicity?
+	return err
 }
 
 func (r *Registry) listTags(ctx context.Context, name string) ([]string, error) {

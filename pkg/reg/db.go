@@ -37,7 +37,8 @@ func initSQLite(path string) (*RegistryDB, error) {
 			manifest_id INTEGER PRIMARY KEY AUTOINCREMENT,
 			repository_id INTEGER NOT NULL,
 			tag_id INTEGER,
-			manifest_json TEXT NOT NULL
+			manifest_json TEXT NOT NULL,
+			UNIQUE(repository_id, tag_id)
 		);`,
 		`CREATE TABLE IF NOT EXISTS manifest_layers (
 			manifest_id INTEGER NOT NULL,
@@ -49,7 +50,8 @@ func initSQLite(path string) (*RegistryDB, error) {
 			layer_id INTEGER PRIMARY KEY AUTOINCREMENT,
 			digest TEXT NOT NULL UNIQUE,
 			media_type TEXT NOT NULL,
-			size INTEGER NOT NULL
+			size INTEGER NOT NULL,
+			UNIQUE(digest)
 		);`,
 	}
 	for _, table := range tables {
@@ -115,8 +117,8 @@ func (r *RegistryDB) PutManifest(repo string, tag string, manifestBytes string, 
 		return fmt.Errorf("failed to get tag id: %w", err)
 	}
 
-	query = `INSERT INTO manifests (repository_id, tag_id, manifest_json) VALUES (?, ?, ?)`
-	_, err = r.db.Exec(query, repoID, tagID, manifestBytes)
+	query = `INSERT INTO manifests (repository_id, tag_id, manifest_json) VALUES (?, ?, ?) ON CONFLICT(repository_id, tag_id) DO UPDATE SET manifest_json = ?`
+	_, err = r.db.Exec(query, repoID, tagID, manifestBytes, manifestBytes)
 	if err != nil {
 		return fmt.Errorf("failed to store manifest: %w", err)
 	}
@@ -132,12 +134,19 @@ func (r *RegistryDB) PutManifest(repo string, tag string, manifestBytes string, 
 		return fmt.Errorf("failed to get manifest id: %w", err)
 	}
 
-	query = `INSERT INTO layers (digest, media_type, size) VALUES (?, ?, ?) ON CONFLICT(digest) DO NOTHING`
+	query = `INSERT INTO layers (digest, media_type, size) VALUES (?, ?, ?) ON CONFLICT(digest) DO UPDATE SET media_type = ?, size = ?`
 	for _, layer := range manifest.Layers {
-		_, err = r.db.Exec(query, layer.Digest.String(), layer.MediaType, layer.Size)
+		_, err = r.db.Exec(query, layer.Digest.String(), layer.MediaType, layer.Size, layer.MediaType, layer.Size)
 		if err != nil {
 			return fmt.Errorf("failed to store layer: %w", err)
 		}
+	}
+
+	// Should only be effective if the manifest is updated
+	purgeLayersQuery := `DELETE FROM manifest_layers WHERE manifest_id = ?`
+	_, err = r.db.Exec(purgeLayersQuery, manifestID)
+	if err != nil {
+		return fmt.Errorf("failed to delete existing manifest layers: %w", err)
 	}
 
 	for i, layer := range manifest.Layers {
