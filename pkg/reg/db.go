@@ -200,6 +200,10 @@ func (r *RegistryDB) PutTags(repo string, tags []string) error {
 }
 
 func (r *RegistryDB) ListRepositories(continuationToken *string, n int) ([]string, *string, error) {
+	if continuationToken == nil {
+		token := ""
+		continuationToken = &token
+	}
 	query := `SELECT repository FROM tags WHERE repository > ? LIMIT ?`
 	var repos []string
 	err := r.db.Select(&repos, query, continuationToken, n)
@@ -239,7 +243,7 @@ func (r *RegistryDB) UpdateUploadSession(uploadID, s3UploadID string, uploadedSi
 }
 
 func (r *RegistryDB) GetUploadSession(uploadID string) (string, string, int64, error) {
-	query := `SELECT s3_upload_id, s3_key, uploaded_size FROM upload_sessions WHERE upload_id = ?`
+	query := `SELECT COALESCE(s3_upload_id, ''), COALESCE(s3_key, ''), uploaded_size FROM upload_sessions WHERE upload_id = ?`
 	var s3UploadID, s3Key string
 	var uploadedSize int64
 	err := r.db.QueryRow(query, uploadID).Scan(&s3UploadID, &s3Key, &uploadedSize)
