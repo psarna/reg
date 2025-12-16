@@ -212,6 +212,12 @@ func (r *RegistryDB) ListRepositories(continuationToken *string, n int) ([]strin
 	return repos, &repos[len(repos)-1], nil
 }
 
+func (r *RegistryDB) Exists(repo string, tag string) bool {
+	query := `SELECT 1 FROM tags WHERE repository = ? AND name = ?`
+	var dummy int
+	return r.db.Get(&dummy, query, repo, tag) == nil
+}
+
 func (r *RegistryDB) Close() error {
 	if err := r.db.Close(); err != nil {
 		return fmt.Errorf("failed to close database: %w", err)

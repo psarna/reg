@@ -11,15 +11,19 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"golang.org/x/sync/errgroup"
 )
 
 type Registry struct {
@@ -33,6 +37,7 @@ func NewRegistry(ctx context.Context, bucket string) (*Registry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to load SDK config, %v", err)
 	}
+	cfg.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	s3Client := s3.NewFromConfig(cfg)
 
 	// TODO: customize the uploads directory
@@ -303,11 +308,17 @@ func (r *Registry) listRepositories(ctx context.Context, continuationToken *stri
 	return r.db.ListRepositories(continuationToken, n)
 }
 
-// Lists all S3 objects, and then triggers a GetManifest for each repo/tag pair which also writes-through to the database. Needs to be done concurrently with errgroup
 func (r *Registry) Bootstrap(ctx context.Context) error {
 	prefix := "docker/registry/v2/repositories/"
 	var continuationToken *string
 
+	group, ctx := errgroup.WithContext(ctx)
+	group.SetLimit(runtime.NumCPU() * 4)
+
+	found := uint64(0)
+	skipped := uint64(0)
+	processed := uint64(0)
+	processing := int64(0)
 	for {
 		req, err := r.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket:            &r.bucket,
@@ -319,13 +330,33 @@ func (r *Registry) Bootstrap(ctx context.Context) error {
 		}
 		for _, obj := range req.Contents {
 			if strings.HasSuffix(*obj.Key, "current/link") {
+				found++
 				noPrefix := strings.TrimPrefix(*obj.Key, "docker/registry/v2/repositories/")
 				repo, tag, ok := strings.Cut(noPrefix, "/_manifests/tags/")
 				if !ok {
 					continue
 				}
 				tag = strings.TrimSuffix(tag, "/current/link")
-				slog.Info("repo+tag:", "repo", repo, "tag", tag)
+				if r.db.Exists(repo, tag) {
+					skipped++
+					if skipped%10000 == 5000 {
+						slog.Info("Bootstrap progress", "skipped", skipped)
+					}
+					continue
+				}
+				group.Go(func() error {
+					atomic.AddInt64(&processing, 1)
+					defer atomic.AddInt64(&processing, -1)
+					_, _, err := r.getManifest(ctx, repo, tag)
+					atomic.AddUint64(&processed, 1)
+					if err != nil {
+						slog.Warn("error getting manifest", "repo", repo, "tag", tag, "error", err)
+					}
+					return nil
+				})
+				if found%1000 == 500 {
+					slog.Info("Bootstrap progress", "found", found, "processed", processed, "processing", processing)
+				}
 			}
 		}
 		if req.IsTruncated == nil || !*req.IsTruncated {
@@ -333,8 +364,7 @@ func (r *Registry) Bootstrap(ctx context.Context) error {
 		}
 		continuationToken = req.NextContinuationToken
 	}
-
-	return nil
+	return group.Wait()
 }
 
 func (r *Registry) Close() error {
