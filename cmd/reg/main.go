@@ -27,7 +27,9 @@ func main() {
 	}
 
 	var bucket string
+	var bootstrap bool
 	serveCmd.Flags().StringVarP(&bucket, "bucket", "b", "", "Bucket name (required)")
+	serveCmd.Flags().BoolVarP(&bootstrap, "bootstrap", "B", false, "Bootstrap the registry from S3 (might take a few centuries for large registries)")
 	serveCmd.MarkFlagRequired("bucket")
 
 	rootCmd.AddCommand(serveCmd)
@@ -49,21 +51,41 @@ $$ |      \$$$$$$$\ \$$$$$$$ |
                      \______/ `
 
 func runServe(cmd *cobra.Command, args []string) {
-	bucket, _ := cmd.Flags().GetString("bucket")
+	bucket, err := cmd.Flags().GetString("bucket")
+	if err != nil {
+		log.Fatalf("Failed to get bucket flag: %v", err)
+	}
+	bootstrap, err := cmd.Flags().GetBool("bootstrap")
+	if err != nil {
+		slog.Error("Failed to get bootstrap flag", "err", err)
+	}
 
 	ctx := context.Background()
-	r, cleanup, err := reg.NewRouter(ctx, bucket)
+	registry, err := reg.NewRegistry(ctx, bucket)
+	if err != nil {
+		log.Fatalf("Failed to create registry: %v", err)
+	}
+	defer registry.Close()
+
+	if bootstrap {
+		if err := registry.Bootstrap(ctx); err != nil {
+			slog.Error("Failed to bootstrap registry", "err", err)
+			return
+		}
+		slog.Info("Bootstrap completed")
+	}
+
+	r, err := reg.NewRouter(ctx, registry)
 	if err != nil {
 		log.Fatalf("Failed to create router: %v", err)
 	}
-	defer cleanup()
 
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGINT)
 	go func() {
 		sig := <-signalChan
 		fmt.Printf("Received signal: %v, running cleanup\n", sig)
-		cleanup()
+		registry.Close()
 		os.Exit(0)
 	}()
 

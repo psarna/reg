@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -301,38 +300,32 @@ func (r *Registry) listTags(ctx context.Context, name string) ([]string, error) 
 }
 
 func (r *Registry) listRepositories(ctx context.Context, continuationToken *string, n int) ([]string, *string, error) {
-	// For debugging purposes, let's always list from S3 for the time being
-	/*
-		readyRepos, err := r.db.ListRepositories(offset, n)
-		if err == nil && len(readyRepos) > 0 {
-			return readyRepos, nil
-		}
-	*/
+	return r.db.ListRepositories(continuationToken, n)
+}
 
-	// List up to n objects from offset offset
-	var repoNames []string
-
-	// list items until we find _manifests/ prefix, and then add the prefix to repoNames and continue until we find more
+// Lists all S3 objects, and then triggers a GetManifest for each repo/tag pair which also writes-through to the database. Needs to be done concurrently with errgroup
+func (r *Registry) Bootstrap(ctx context.Context) error {
 	prefix := "docker/registry/v2/repositories/"
-	for len(repoNames) < n {
+	var continuationToken *string
+
+	for {
 		req, err := r.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket:            &r.bucket,
 			Prefix:            &prefix,
 			ContinuationToken: continuationToken,
 		})
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
 		for _, obj := range req.Contents {
-			if strings.Contains(*obj.Key, "/_manifests/tags/") {
-				repoName := strings.TrimPrefix(*obj.Key, prefix)
-				repoName = strings.Split(repoName, "/_manifests/tags/")[0]
-				if !slices.Contains(repoNames, repoName) {
-					repoNames = append(repoNames, repoName)
+			if strings.HasSuffix(*obj.Key, "current/link") {
+				noPrefix := strings.TrimPrefix(*obj.Key, "docker/registry/v2/repositories/")
+				repo, tag, ok := strings.Cut(noPrefix, "/_manifests/tags/")
+				if !ok {
+					continue
 				}
-			}
-			if len(repoNames) >= n {
-				break
+				tag = strings.TrimSuffix(tag, "/current/link")
+				slog.Info("repo+tag:", "repo", repo, "tag", tag)
 			}
 		}
 		if req.IsTruncated == nil || !*req.IsTruncated {
@@ -341,15 +334,7 @@ func (r *Registry) listRepositories(ctx context.Context, continuationToken *stri
 		continuationToken = req.NextContinuationToken
 	}
 
-	// Same: for now, let's skip db
-	/*
-		err = r.db.PutRepositories(repoNames)
-		if err != nil {
-			slog.Error("error storing repositories in database", "error", err)
-		}
-	*/
-
-	return repoNames, continuationToken, nil
+	return nil
 }
 
 func (r *Registry) Close() error {

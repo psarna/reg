@@ -20,12 +20,7 @@ type Handler struct {
 	registry *Registry
 }
 
-func NewRouter(ctx context.Context, bucket string) (*mux.Router, func() error, error) {
-	registry, err := NewRegistry(ctx, bucket)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create registry: %w", err)
-	}
-
+func NewRouter(ctx context.Context, registry *Registry) (*mux.Router, error) {
 	h := &Handler{
 		registry: registry,
 	}
@@ -95,11 +90,7 @@ func NewRouter(ctx context.Context, bucket string) (*mux.Router, func() error, e
 	apiRouter.Handle("/repositories", http.HandlerFunc(http.HandlerFunc(h.listRepositories))).
 		Methods("GET")
 
-	cleanup := func() error {
-		return registry.Close()
-	}
-
-	return r, cleanup, nil
+	return r, nil
 }
 
 func (h *Handler) checkAPISupport(w http.ResponseWriter, r *http.Request) {
