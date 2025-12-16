@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gorilla/mux"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -20,6 +21,7 @@ import (
 type Handler struct {
 	s3Client *s3.Client
 	bucket   string
+	db       *RegistryDB
 }
 
 func NewRouter(ctx context.Context, bucket string) (*mux.Router, error) {
@@ -29,9 +31,15 @@ func NewRouter(ctx context.Context, bucket string) (*mux.Router, error) {
 	}
 	s3Client := s3.NewFromConfig(cfg)
 
+	db, err := initSQLite("registry.db")
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize database: %w", err)
+	}
+
 	h := &Handler{
 		s3Client: s3Client,
 		bucket:   bucket,
+		db:       db,
 	}
 
 	r := mux.NewRouter()
@@ -179,6 +187,23 @@ func (h *Handler) getManifest(w http.ResponseWriter, r *http.Request) {
 	name := vars["name"]
 	reference := vars["reference"]
 
+	readyManifestBytes, err := h.db.GetManifest(name, reference)
+	if err == nil {
+		var manifest v1.Manifest
+		if err := json.Unmarshal([]byte(readyManifestBytes), &manifest); err != nil {
+			slog.Error("error unmarshalling manifest", "error", err)
+			http.Error(w, fmt.Sprintf("error unmarshalling manifest: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", manifest.MediaType)
+		_, err = w.Write([]byte(readyManifestBytes))
+		if err != nil {
+			slog.Error("error writing manifest response", "error", err)
+			http.Error(w, fmt.Sprintf("error writing manifest response: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
 	sha, err := h.getManifestSHA(r.Context(), name, reference)
 	if err != nil {
 		slog.Error("error getting manifest SHA", "error", err)
@@ -210,10 +235,14 @@ func (h *Handler) getManifest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("error unmarshalling manifest: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	if err := h.db.PutManifest(name, reference, string(blobData), &manifest); err != nil {
+		slog.Error("error storing manifest in database", "error", err)
+	}
+
 	w.Header().Set("Content-Type", manifest.MediaType)
 	w.Header().Set("Docker-Content-Digest", string(sha))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(blobData)))
-	w.WriteHeader(http.StatusOK)
 	_, err = w.Write(blobData)
 	if err != nil {
 		slog.Error("error writing manifest response", "error", err)
@@ -275,7 +304,8 @@ func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
 
-	w.WriteHeader(http.StatusOK)
+	// TODO: try the db, otherwise list S3 objects from given prefix that match */current/link
+
 	slog.Warn("list tags not implemented")
 	fmt.Fprintf(w, `{"name":"%s", "tags":["tag1", "tag2", "tag3"]}`, name)
 }
