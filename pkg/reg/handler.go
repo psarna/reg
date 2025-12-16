@@ -1,6 +1,7 @@
 package reg
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,15 +15,23 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 type Handler struct {
-	registry *Registry
+	registry  *Registry
+	blobCache *lru.Cache[string, []byte]
 }
 
 func NewRouter(ctx context.Context, registry *Registry) (*mux.Router, error) {
 	h := &Handler{
 		registry: registry,
+	}
+
+	var err error
+	h.blobCache, err = lru.New[string, []byte](4096)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create blob cache: %w", err)
 	}
 
 	r := mux.NewRouter()
@@ -104,6 +113,24 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
 	digest := vars["digest"]
+
+	if h.blobCache != nil {
+		if blobData, ok := h.blobCache.Get(digest); ok {
+			slog.Debug("blob cache hit", "digest", digest)
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(blobData)))
+			w.Header().Set("Docker-Content-Digest", digest)
+
+			_, err := w.Write(blobData)
+			if err != nil {
+				slog.Error("error writing blob from cache", "error", err)
+				http.Error(w, fmt.Sprintf("error writing blob: %v", err), http.StatusInternalServerError)
+				return
+			}
+			return
+		}
+	}
+
 	presignedURL, err := h.registry.getBlobRedirect(r.Context(), name, digest, r.Method)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -185,7 +212,29 @@ func (h *Handler) startUploadWithDigest(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if len(r.Header.Get("Content-Length")) > 0 && r.Header.Get("Content-Length") != "0" {
-		_, err := h.registry.uploadChunk(r.Context(), uploadId, 0, r.Body)
+		contentLength, err := strconv.ParseInt(r.Header.Get("Content-Length"), 10, 64)
+		if err != nil {
+			slog.Error("error parsing content length", "error", err)
+			http.Error(w, fmt.Sprintf("error parsing content length: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		var blobReader io.ReadCloser = r.Body
+		if contentLength <= 8192 {
+			var blobData []byte
+			blobData, err = io.ReadAll(r.Body)
+			if err != nil {
+				slog.Error("error reading blob data", "error", err)
+				http.Error(w, fmt.Sprintf("error reading blob data: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if h.blobCache != nil {
+				h.blobCache.Add(digest, blobData)
+			}
+			blobReader = io.NopCloser(bytes.NewReader(blobData))
+		}
+
+		_, err = h.registry.uploadChunk(r.Context(), uploadId, 0, blobReader)
 		if err != nil {
 			slog.Error("error uploading chunk", "error", err)
 			http.Error(w, fmt.Sprintf("error uploading chunk: %v", err), http.StatusInternalServerError)

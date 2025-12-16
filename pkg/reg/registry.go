@@ -61,7 +61,6 @@ func (r *Registry) getBlobRedirect(ctx context.Context, name string, digest stri
 	blobKey := fmt.Sprintf("docker/registry/v2/blobs/%s/%s/%s/data", algo, hex[0:2], hex)
 	slog.Debug("getBlob", "name", name, "blobKey", blobKey, "method", method)
 
-	// TODO: small blob cache and direct retrieval for small blobs
 	expires := 15 * time.Minute
 
 	var err error
