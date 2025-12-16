@@ -560,6 +560,26 @@ func (r *Registry) Bootstrap(ctx context.Context) error {
 	return group.Wait()
 }
 
+func (r *Registry) listAllTags(_ context.Context, continuationToken *string, n int) ([]map[string]string, *string, error) {
+	return r.db.ListAllTags(continuationToken, n)
+}
+
+func (r *Registry) listLayers(_ context.Context, continuationToken *string, n int) ([]map[string]interface{}, *string, error) {
+	return r.db.ListLayers(continuationToken, n)
+}
+
+func (r *Registry) listManifests(_ context.Context, continuationToken *string, n int) ([]map[string]string, *string, error) {
+	return r.db.ListManifests(continuationToken, n)
+}
+
+func (r *Registry) listUploadSessions(_ context.Context) ([]map[string]interface{}, error) {
+	return r.db.ListUploadSessions()
+}
+
+func (r *Registry) getRegistryStats(_ context.Context) (map[string]interface{}, error) {
+	return r.db.GetRegistryStats()
+}
+
 func (r *Registry) Close() error {
 	if err := r.db.Close(); err != nil {
 		return fmt.Errorf("failed to close database: %w", err)

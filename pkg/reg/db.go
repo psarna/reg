@@ -272,6 +272,197 @@ func (r *RegistryDB) GetStaleUploadSessions(maxAge string) ([]string, error) {
 	return uploadIDs, nil
 }
 
+func (r *RegistryDB) ListAllTags(continuationToken *string, n int) ([]map[string]string, *string, error) {
+	if continuationToken == nil {
+		token := ""
+		continuationToken = &token
+	}
+
+	query := `SELECT repository, name FROM tags WHERE repository || ':' || name > ? ORDER BY repository, name LIMIT ?`
+	var result []map[string]string
+	rows, err := r.db.Query(query, *continuationToken, n)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to list tags: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var repo, tag string
+		if err := rows.Scan(&repo, &tag); err != nil {
+			return nil, nil, fmt.Errorf("failed to scan tag row: %w", err)
+		}
+		result = append(result, map[string]string{"repository": repo, "tag": tag})
+	}
+
+	if len(result) == 0 {
+		return nil, nil, nil
+	}
+
+	lastEntry := result[len(result)-1]
+	nextToken := lastEntry["repository"] + ":" + lastEntry["tag"]
+	return result, &nextToken, nil
+}
+
+func (r *RegistryDB) ListLayers(continuationToken *string, n int) ([]map[string]any, *string, error) {
+	if continuationToken == nil {
+		token := ""
+		continuationToken = &token
+	}
+
+	query := `SELECT digest, media_type, size FROM layers WHERE digest > ? ORDER BY digest LIMIT ?`
+	var result []map[string]any
+	rows, err := r.db.Query(query, *continuationToken, n)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to list layers: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var digest, mediaType string
+		var size int64
+		if err := rows.Scan(&digest, &mediaType, &size); err != nil {
+			return nil, nil, fmt.Errorf("failed to scan layer row: %w", err)
+		}
+		result = append(result, map[string]any{
+			"digest":     digest,
+			"media_type": mediaType,
+			"size":       size,
+		})
+	}
+
+	if len(result) == 0 {
+		return nil, nil, nil
+	}
+
+	lastDigest := result[len(result)-1]["digest"].(string)
+	return result, &lastDigest, nil
+}
+
+func (r *RegistryDB) ListManifests(continuationToken *string, n int) ([]map[string]string, *string, error) {
+	if continuationToken == nil {
+		token := ""
+		continuationToken = &token
+	}
+
+	query := `SELECT t.repository, t.name FROM manifests m 
+		JOIN tags t ON t.rowid = m.tag_rowid 
+		WHERE t.repository || ':' || t.name > ?
+		ORDER BY t.repository, t.name LIMIT ?`
+	var result []map[string]string
+	rows, err := r.db.Query(query, *continuationToken, n)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to list manifests: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var repo, tag string
+		if err := rows.Scan(&repo, &tag); err != nil {
+			return nil, nil, fmt.Errorf("failed to scan manifest row: %w", err)
+		}
+		result = append(result, map[string]string{"repository": repo, "tag": tag})
+	}
+
+	if len(result) == 0 {
+		return nil, nil, nil
+	}
+
+	lastEntry := result[len(result)-1]
+	nextToken := lastEntry["repository"] + ":" + lastEntry["tag"]
+	return result, &nextToken, nil
+}
+
+func (r *RegistryDB) ListUploadSessions() ([]map[string]any, error) {
+	var result []map[string]any
+	query := `SELECT upload_id, repository, digest, s3_upload_id, s3_key, 
+		created_at, last_activity, total_size, uploaded_size 
+		FROM upload_sessions ORDER BY last_activity DESC`
+	rows, err := r.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list upload sessions: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var uploadID, repo, createdAt, lastActivity string
+		var digest, s3UploadID, s3Key sql.NullString
+		var totalSize, uploadedSize sql.NullInt64
+		if err := rows.Scan(&uploadID, &repo, &digest, &s3UploadID, &s3Key,
+			&createdAt, &lastActivity, &totalSize, &uploadedSize); err != nil {
+			return nil, fmt.Errorf("failed to scan upload session row: %w", err)
+		}
+		session := map[string]any{
+			"upload_id":     uploadID,
+			"repository":    repo,
+			"created_at":    createdAt,
+			"last_activity": lastActivity,
+		}
+		if digest.Valid {
+			session["digest"] = digest.String
+		}
+		if s3UploadID.Valid {
+			session["s3_upload_id"] = s3UploadID.String
+		}
+		if s3Key.Valid {
+			session["s3_key"] = s3Key.String
+		}
+		if totalSize.Valid {
+			session["total_size"] = totalSize.Int64
+		}
+		if uploadedSize.Valid {
+			session["uploaded_size"] = uploadedSize.Int64
+		}
+		result = append(result, session)
+	}
+	return result, nil
+}
+
+func (r *RegistryDB) GetRegistryStats() (map[string]any, error) {
+	stats := make(map[string]any)
+
+	var repoCount int
+	if err := r.db.Get(&repoCount, "SELECT COUNT(DISTINCT repository) FROM tags"); err != nil {
+		return nil, fmt.Errorf("failed to count repositories: %w", err)
+	}
+	stats["repositories"] = repoCount
+
+	var tagCount int
+	if err := r.db.Get(&tagCount, "SELECT COUNT(*) FROM tags"); err != nil {
+		return nil, fmt.Errorf("failed to count tags: %w", err)
+	}
+	stats["tags"] = tagCount
+
+	var manifestCount int
+	if err := r.db.Get(&manifestCount, "SELECT COUNT(*) FROM manifests"); err != nil {
+		return nil, fmt.Errorf("failed to count manifests: %w", err)
+	}
+	stats["manifests"] = manifestCount
+
+	var layerCount int
+	if err := r.db.Get(&layerCount, "SELECT COUNT(*) FROM layers"); err != nil {
+		return nil, fmt.Errorf("failed to count layers: %w", err)
+	}
+	stats["layers"] = layerCount
+
+	var totalSize sql.NullInt64
+	if err := r.db.Get(&totalSize, "SELECT SUM(size) FROM layers"); err != nil {
+		return nil, fmt.Errorf("failed to calculate total size: %w", err)
+	}
+	if totalSize.Valid {
+		stats["total_size_bytes"] = totalSize.Int64
+	} else {
+		stats["total_size_bytes"] = 0
+	}
+
+	var activeUploads int
+	if err := r.db.Get(&activeUploads, "SELECT COUNT(*) FROM upload_sessions"); err != nil {
+		return nil, fmt.Errorf("failed to count active uploads: %w", err)
+	}
+	stats["active_uploads"] = activeUploads
+
+	return stats, nil
+}
+
 func (r *RegistryDB) Close() error {
 	if err := r.db.Close(); err != nil {
 		return fmt.Errorf("failed to close database: %w", err)

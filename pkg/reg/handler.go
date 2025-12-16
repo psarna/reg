@@ -102,6 +102,21 @@ func NewRouter(ctx context.Context, registry *Registry) (*mux.Router, error) {
 	apiRouter.Handle("/repositories", http.HandlerFunc(http.HandlerFunc(h.listRepositories))).
 		Methods("GET")
 
+	// custom endpoint 2: list all tags
+	apiRouter.Handle("/tags", http.HandlerFunc(h.listAllTags)).Methods("GET")
+
+	// custom endpoint 3: list all layers
+	apiRouter.Handle("/layers", http.HandlerFunc(h.listLayers)).Methods("GET")
+
+	// custom endpoint 4: list all manifests
+	apiRouter.Handle("/manifests", http.HandlerFunc(h.listManifests)).Methods("GET")
+
+	// custom endpoint 5: list upload sessions
+	apiRouter.Handle("/upload-sessions", http.HandlerFunc(h.listUploadSessions)).Methods("GET")
+
+	// custom endpoint 6: get registry stats
+	apiRouter.Handle("/stats", http.HandlerFunc(h.getRegistryStats)).Methods("GET")
+
 	return r, nil
 }
 
@@ -512,6 +527,181 @@ func (h *Handler) listRepositories(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("error writing repositories response", "error", err)
 		http.Error(w, fmt.Sprintf("error writing repositories response: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (h *Handler) listAllTags(w http.ResponseWriter, r *http.Request) {
+	var continuationToken *string
+	if token := r.URL.Query().Get("continuationToken"); token != "" {
+		continuationToken = &token
+	}
+	nStr := r.URL.Query().Get("n")
+	n, err := strconv.Atoi(nStr)
+	if err != nil {
+		n = 64
+	}
+	tags, continuationToken, err := h.registry.listAllTags(r.Context(), continuationToken, n)
+	if err != nil {
+		slog.Error("error listing tags", "error", err)
+		http.Error(w, fmt.Sprintf("error listing tags: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	marshaledTags, err := json.Marshal(tags)
+	if err != nil {
+		slog.Error("error marshalling tags", "error", err)
+		http.Error(w, fmt.Sprintf("error marshalling tags: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if continuationToken != nil {
+		w.Header().Set(
+			"Link",
+			fmt.Sprintf(
+				"<%s/v2/tags?continuationToken=%s&n=%d>; rel=\"next\"",
+				r.URL.Scheme+"://"+r.URL.Host,
+				url.QueryEscape(*continuationToken),
+				n,
+			),
+		)
+	}
+	_, err = w.Write(marshaledTags)
+	if err != nil {
+		slog.Error("error writing tags response", "error", err)
+		http.Error(w, fmt.Sprintf("error writing tags response: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (h *Handler) listLayers(w http.ResponseWriter, r *http.Request) {
+	var continuationToken *string
+	if token := r.URL.Query().Get("continuationToken"); token != "" {
+		continuationToken = &token
+	}
+	nStr := r.URL.Query().Get("n")
+	n, err := strconv.Atoi(nStr)
+	if err != nil {
+		n = 64
+	}
+	layers, continuationToken, err := h.registry.listLayers(r.Context(), continuationToken, n)
+	if err != nil {
+		slog.Error("error listing layers", "error", err)
+		http.Error(w, fmt.Sprintf("error listing layers: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	marshaledLayers, err := json.Marshal(layers)
+	if err != nil {
+		slog.Error("error marshalling layers", "error", err)
+		http.Error(w, fmt.Sprintf("error marshalling layers: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if continuationToken != nil {
+		w.Header().Set(
+			"Link",
+			fmt.Sprintf(
+				"<%s/v2/layers?continuationToken=%s&n=%d>; rel=\"next\"",
+				r.URL.Scheme+"://"+r.URL.Host,
+				url.QueryEscape(*continuationToken),
+				n,
+			),
+		)
+	}
+	_, err = w.Write(marshaledLayers)
+	if err != nil {
+		slog.Error("error writing layers response", "error", err)
+		http.Error(w, fmt.Sprintf("error writing layers response: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (h *Handler) listManifests(w http.ResponseWriter, r *http.Request) {
+	var continuationToken *string
+	if token := r.URL.Query().Get("continuationToken"); token != "" {
+		continuationToken = &token
+	}
+	nStr := r.URL.Query().Get("n")
+	n, err := strconv.Atoi(nStr)
+	if err != nil {
+		n = 64
+	}
+	manifests, continuationToken, err := h.registry.listManifests(r.Context(), continuationToken, n)
+	if err != nil {
+		slog.Error("error listing manifests", "error", err)
+		http.Error(w, fmt.Sprintf("error listing manifests: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	marshaledManifests, err := json.Marshal(manifests)
+	if err != nil {
+		slog.Error("error marshalling manifests", "error", err)
+		http.Error(w, fmt.Sprintf("error marshalling manifests: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if continuationToken != nil {
+		w.Header().Set(
+			"Link",
+			fmt.Sprintf(
+				"<%s/v2/manifests?continuationToken=%s&n=%d>; rel=\"next\"",
+				r.URL.Scheme+"://"+r.URL.Host,
+				url.QueryEscape(*continuationToken),
+				n,
+			),
+		)
+	}
+	_, err = w.Write(marshaledManifests)
+	if err != nil {
+		slog.Error("error writing manifests response", "error", err)
+		http.Error(w, fmt.Sprintf("error writing manifests response: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (h *Handler) listUploadSessions(w http.ResponseWriter, r *http.Request) {
+	sessions, err := h.registry.listUploadSessions(r.Context())
+	if err != nil {
+		slog.Error("error listing upload sessions", "error", err)
+		http.Error(w, fmt.Sprintf("error listing upload sessions: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	marshaledSessions, err := json.Marshal(sessions)
+	if err != nil {
+		slog.Error("error marshalling upload sessions", "error", err)
+		http.Error(w, fmt.Sprintf("error marshalling upload sessions: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, err = w.Write(marshaledSessions)
+	if err != nil {
+		slog.Error("error writing upload sessions response", "error", err)
+		http.Error(w, fmt.Sprintf("error writing upload sessions response: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (h *Handler) getRegistryStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.registry.getRegistryStats(r.Context())
+	if err != nil {
+		slog.Error("error getting registry stats", "error", err)
+		http.Error(w, fmt.Sprintf("error getting registry stats: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	marshaledStats, err := json.Marshal(stats)
+	if err != nil {
+		slog.Error("error marshalling registry stats", "error", err)
+		http.Error(w, fmt.Sprintf("error marshalling registry stats: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, err = w.Write(marshaledStats)
+	if err != nil {
+		slog.Error("error writing registry stats response", "error", err)
+		http.Error(w, fmt.Sprintf("error writing registry stats response: %v", err), http.StatusInternalServerError)
 		return
 	}
 }
