@@ -196,3 +196,10 @@ func (r *RegistryDB) PutTags(repo string, tags []string) error {
 
 	return nil
 }
+
+func (r *RegistryDB) Close() error {
+	if err := r.db.Close(); err != nil {
+		return fmt.Errorf("failed to close database: %w", err)
+	}
+	return nil
+}

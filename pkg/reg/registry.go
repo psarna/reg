@@ -298,3 +298,10 @@ func (r *Registry) listTags(ctx context.Context, name string) ([]string, error) 
 
 	return repoTags, nil
 }
+
+func (r *Registry) Close() error {
+	if err := r.db.Close(); err != nil {
+		return fmt.Errorf("failed to close database: %w", err)
+	}
+	return nil
+}

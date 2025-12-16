@@ -18,10 +18,10 @@ type Handler struct {
 	registry *Registry
 }
 
-func NewRouter(ctx context.Context, bucket string) (*mux.Router, error) {
+func NewRouter(ctx context.Context, bucket string) (*mux.Router, func() error, error) {
 	registry, err := NewRegistry(ctx, bucket)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create registry: %w", err)
+		return nil, nil, fmt.Errorf("failed to create registry: %w", err)
 	}
 
 	h := &Handler{
@@ -89,7 +89,11 @@ func NewRouter(ctx context.Context, bucket string) (*mux.Router, error) {
 	// end-13: Get upload status
 	apiRouter.Handle("/{name:.*}/blobs/uploads/{reference}", http.HandlerFunc(h.getUploadStatus)).Methods("GET")
 
-	return r, nil
+	cleanup := func() error {
+		return registry.Close()
+	}
+
+	return r, cleanup, nil
 }
 
 func (h *Handler) checkAPISupport(w http.ResponseWriter, r *http.Request) {
