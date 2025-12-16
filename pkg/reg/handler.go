@@ -185,14 +185,14 @@ func (h *Handler) startUploadWithDigest(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if len(r.Header.Get("Content-Length")) > 0 && r.Header.Get("Content-Length") != "0" {
-		_, err := h.registry.uploadChunk(r.Context(), name, uploadId, 0, r.ContentLength, r.Body)
+		_, err := h.registry.uploadChunk(r.Context(), uploadId, 0, r.Body)
 		if err != nil {
 			slog.Error("error uploading chunk", "error", err)
 			http.Error(w, fmt.Sprintf("error uploading chunk: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		err = h.registry.completeUpload(r.Context(), name, uploadId, digest)
+		err = h.registry.completeUpload(r.Context(), uploadId, digest)
 		if err != nil {
 			slog.Error("error completing upload", "error", err)
 			http.Error(w, fmt.Sprintf("error completing upload: %v", err), http.StatusInternalServerError)
@@ -220,9 +220,9 @@ func (h *Handler) uploadChunk(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("error parsing content range: %v", err), http.StatusBadRequest)
 		return
 	}
-	slog.Debug("uploadChunk", "ref", reference, "range", fRange)
+	slog.Debug("uploadChunk", "ref", reference, "range", fRange, "start", startOffset, "end", endOffset)
 
-	n, err := h.registry.uploadChunk(r.Context(), name, reference, startOffset, endOffset-startOffset, r.Body)
+	n, err := h.registry.uploadChunk(r.Context(), reference, startOffset, r.Body)
 	if err != nil {
 		slog.Error("error uploading chunk", "error", err)
 		http.Error(w, fmt.Sprintf("error uploading chunk: %v", err), http.StatusInternalServerError)
@@ -240,7 +240,7 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request) {
 	reference := vars["reference"]
 	digest := vars["digest"]
 
-	err := h.registry.completeUpload(r.Context(), name, reference, digest)
+	err := h.registry.completeUpload(r.Context(), reference, digest)
 	if err != nil {
 		slog.Error("error completing upload", "error", err)
 		http.Error(w, fmt.Sprintf("error completing upload: %v", err), http.StatusInternalServerError)
@@ -424,7 +424,15 @@ func (h *Handler) listRepositories(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if continuationToken != nil {
-		w.Header().Set("Link", fmt.Sprintf("<%s/v2/repositories?continuationToken=%s&n=%d>; rel=\"next\"", r.URL.Scheme+"://"+r.URL.Host, url.QueryEscape(*continuationToken), n))
+		w.Header().Set(
+			"Link",
+			fmt.Sprintf(
+				"<%s/v2/repositories?continuationToken=%s&n=%d>; rel=\"next\"",
+				r.URL.Scheme+"://"+r.URL.Host,
+				url.QueryEscape(*continuationToken),
+				n,
+			),
+		)
 	}
 	_, err = w.Write(marshaledRepos)
 	if err != nil {

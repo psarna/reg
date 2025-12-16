@@ -2,3 +2,4 @@ cmd/reg/reg
 registry.db
 registry.db-shm
 registry.db-wal
+reg

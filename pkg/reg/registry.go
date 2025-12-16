@@ -40,7 +40,6 @@ func NewRegistry(ctx context.Context, bucket string) (*Registry, error) {
 	cfg.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	s3Client := s3.NewFromConfig(cfg)
 
-
 	db, err := initSQLite("registry.db")
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize database: %w", err)
@@ -63,7 +62,6 @@ func (r *Registry) getBlobRedirect(ctx context.Context, name string, digest stri
 	slog.Debug("getBlob", "name", name, "blobKey", blobKey, "method", method)
 
 	// TODO: small blob cache and direct retrieval for small blobs
-
 	expires := 15 * time.Minute
 
 	var err error
@@ -219,54 +217,54 @@ func (r *Registry) putManifest(ctx context.Context, name string, reference strin
 
 func (r *Registry) startUpload(ctx context.Context, name string, reference string) error {
 	tempKey := fmt.Sprintf("uploads/%s.uploading", reference)
-	
+
 	multipartInput := &s3.CreateMultipartUploadInput{
 		Bucket: &r.bucket,
 		Key:    &tempKey,
 	}
-	
+
 	_, err := r.s3Client.CreateMultipartUpload(ctx, multipartInput)
 	if err != nil {
 		return fmt.Errorf("failed to create multipart upload: %w", err)
 	}
-	
+
 	return r.db.CreateUploadSession(reference, name, tempKey)
 }
 
-func (r *Registry) uploadChunk(ctx context.Context, name string, reference string, offset int64, length int64, body io.ReadCloser) (int64, error) {
+func (r *Registry) uploadChunk(ctx context.Context, reference string, offset int64, body io.ReadCloser) (int64, error) {
 	defer body.Close()
-	
+
 	s3UploadID, s3Key, uploadedSize, err := r.db.GetUploadSession(reference)
 	if err != nil {
 		return 0, fmt.Errorf("upload session not found: %w", err)
 	}
-	
+
 	if s3UploadID == "" {
 		tempKey := fmt.Sprintf("uploads/%s.uploading", reference)
 		multipartInput := &s3.CreateMultipartUploadInput{
 			Bucket: &r.bucket,
 			Key:    &tempKey,
 		}
-		
+
 		multipartOutput, err := r.s3Client.CreateMultipartUpload(ctx, multipartInput)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create multipart upload: %w", err)
 		}
 		s3UploadID = *multipartOutput.UploadId
 	}
-	
+
 	if offset != uploadedSize {
 		return 0, fmt.Errorf("invalid offset: expected %d, got %d", uploadedSize, offset)
 	}
-	
+
 	partNumber := int32((offset / (5 * 1024 * 1024)) + 1)
-	
+
 	buf := &bytes.Buffer{}
 	n, err := io.Copy(buf, body)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read request body: %w", err)
 	}
-	
+
 	uploadPartInput := &s3.UploadPartInput{
 		Bucket:     &r.bucket,
 		Key:        &s3Key,
@@ -274,42 +272,42 @@ func (r *Registry) uploadChunk(ctx context.Context, name string, reference strin
 		UploadId:   &s3UploadID,
 		Body:       bytes.NewReader(buf.Bytes()),
 	}
-	
+
 	_, err = r.s3Client.UploadPart(ctx, uploadPartInput)
 	if err != nil {
 		return 0, fmt.Errorf("failed to upload part: %w", err)
 	}
-	
+
 	newUploadedSize := uploadedSize + n
 	err = r.db.UpdateUploadSession(reference, s3UploadID, newUploadedSize)
 	if err != nil {
 		return 0, fmt.Errorf("failed to update upload session: %w", err)
 	}
-	
+
 	return n, nil
 }
 
-func (r *Registry) completeUpload(ctx context.Context, name string, reference string, dig string) error {
+func (r *Registry) completeUpload(ctx context.Context, reference string, dig string) error {
 	s3UploadID, s3Key, _, err := r.db.GetUploadSession(reference)
 	if err != nil {
 		return fmt.Errorf("upload session not found: %w", err)
 	}
-	
+
 	if s3UploadID == "" {
 		return fmt.Errorf("no active multipart upload found")
 	}
-	
+
 	listPartsInput := &s3.ListPartsInput{
 		Bucket:   &r.bucket,
 		Key:      &s3Key,
 		UploadId: &s3UploadID,
 	}
-	
+
 	listPartsOutput, err := r.s3Client.ListParts(ctx, listPartsInput)
 	if err != nil {
 		return fmt.Errorf("failed to list parts: %w", err)
 	}
-	
+
 	var completedParts []types.CompletedPart
 	for _, part := range listPartsOutput.Parts {
 		completedParts = append(completedParts, types.CompletedPart{
@@ -317,7 +315,7 @@ func (r *Registry) completeUpload(ctx context.Context, name string, reference st
 			PartNumber: part.PartNumber,
 		})
 	}
-	
+
 	completeInput := &s3.CompleteMultipartUploadInput{
 		Bucket:   &r.bucket,
 		Key:      &s3Key,
@@ -326,46 +324,46 @@ func (r *Registry) completeUpload(ctx context.Context, name string, reference st
 			Parts: completedParts,
 		},
 	}
-	
+
 	_, err = r.s3Client.CompleteMultipartUpload(ctx, completeInput)
 	if err != nil {
 		return fmt.Errorf("failed to complete multipart upload: %w", err)
 	}
-	
+
 	sha, err := digest.Parse(dig)
 	if err != nil {
 		return fmt.Errorf("failed to parse digest: %w", err)
 	}
-	
+
 	hex := sha.Hex()
 	finalBlobKey := fmt.Sprintf("docker/registry/v2/blobs/sha256/%s/%s/data", hex[0:2], hex)
-	
+
 	copyInput := &s3.CopyObjectInput{
 		Bucket:     &r.bucket,
 		Key:        &finalBlobKey,
 		CopySource: aws.String(fmt.Sprintf("%s/%s", r.bucket, s3Key)),
 	}
-	
+
 	_, err = r.s3Client.CopyObject(ctx, copyInput)
 	if err != nil {
 		return fmt.Errorf("failed to copy blob to final location: %w", err)
 	}
-	
+
 	deleteInput := &s3.DeleteObjectInput{
 		Bucket: &r.bucket,
 		Key:    &s3Key,
 	}
-	
+
 	_, err = r.s3Client.DeleteObject(ctx, deleteInput)
 	if err != nil {
 		slog.Warn("failed to delete temporary upload file", "key", s3Key, "error", err)
 	}
-	
+
 	err = r.db.DeleteUploadSession(reference)
 	if err != nil {
 		slog.Warn("failed to delete upload session", "reference", reference, "error", err)
 	}
-	
+
 	slog.Debug("completed upload", "tempKey", s3Key, "finalKey", finalBlobKey)
 	return nil
 }
@@ -379,25 +377,25 @@ func (r *Registry) abortUpload(ctx context.Context, uploadID string) error {
 	if err != nil {
 		return fmt.Errorf("upload session not found: %w", err)
 	}
-	
+
 	if s3UploadID != "" {
 		abortInput := &s3.AbortMultipartUploadInput{
 			Bucket:   &r.bucket,
 			Key:      &s3Key,
 			UploadId: &s3UploadID,
 		}
-		
+
 		_, err = r.s3Client.AbortMultipartUpload(ctx, abortInput)
 		if err != nil {
 			slog.Warn("failed to abort multipart upload", "uploadID", s3UploadID, "error", err)
 		}
 	}
-	
+
 	err = r.db.DeleteUploadSession(uploadID)
 	if err != nil {
 		slog.Warn("failed to delete upload session", "uploadID", uploadID, "error", err)
 	}
-	
+
 	return nil
 }
 
@@ -406,14 +404,14 @@ func (r *Registry) cleanupStaleUploads(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to get stale upload sessions: %w", err)
 	}
-	
+
 	for _, uploadID := range uploadIDs {
 		err := r.abortUpload(ctx, uploadID)
 		if err != nil {
 			slog.Warn("failed to cleanup stale upload", "uploadID", uploadID, "error", err)
 		}
 	}
-	
+
 	slog.Info("cleaned up stale uploads", "count", len(uploadIDs))
 	return nil
 }
@@ -439,7 +437,13 @@ func (r *Registry) listTags(ctx context.Context, name string) ([]string, error) 
 
 		for _, obj := range req.Contents {
 			if strings.HasSuffix(*obj.Key, "current/link") {
-				tag := strings.TrimSuffix(strings.TrimPrefix(*obj.Key, fmt.Sprintf("docker/registry/v2/repositories/%s/_manifests/tags/", name)), "/current/link")
+				tag := strings.TrimSuffix(
+					strings.TrimPrefix(
+						*obj.Key,
+						fmt.Sprintf("docker/registry/v2/repositories/%s/_manifests/tags/", name),
+					),
+					"/current/link",
+				)
 				repoTags = append(repoTags, tag)
 			}
 		}
@@ -457,7 +461,7 @@ func (r *Registry) listTags(ctx context.Context, name string) ([]string, error) 
 	return repoTags, nil
 }
 
-func (r *Registry) listRepositories(ctx context.Context, continuationToken *string, n int) ([]string, *string, error) {
+func (r *Registry) listRepositories(_ context.Context, continuationToken *string, n int) ([]string, *string, error) {
 	return r.db.ListRepositories(continuationToken, n)
 }
 

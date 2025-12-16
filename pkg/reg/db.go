@@ -90,7 +90,6 @@ func (r *RegistryDB) GetManifest(repo string, tag string) (string, error) {
 }
 
 func (r *RegistryDB) PutManifest(repo string, tag string, manifestBytes string, manifest *v1.Manifest) error {
-	// Start a transaction
 	tx, err := r.db.Beginx()
 	if err != nil {
 		return fmt.Errorf("failed to start transaction: %w", err)
@@ -101,14 +100,12 @@ func (r *RegistryDB) PutManifest(repo string, tag string, manifestBytes string, 
 		}
 	}()
 
-	// Ensure tag exists and get its rowid
 	query := `INSERT INTO tags (repository, name) VALUES (?, ?) ON CONFLICT(repository, name) DO NOTHING`
 	_, err = tx.Exec(query, repo, tag)
 	if err != nil {
 		return fmt.Errorf("failed to register tag: %w", err)
 	}
 
-	// Get tag rowid
 	var tagRowID int64
 	query = `SELECT rowid FROM tags WHERE repository = ? AND name = ?`
 	err = tx.Get(&tagRowID, query, repo, tag)
@@ -116,7 +113,6 @@ func (r *RegistryDB) PutManifest(repo string, tag string, manifestBytes string, 
 		return fmt.Errorf("failed to get tag rowid: %w", err)
 	}
 
-	// Store manifest
 	query = `INSERT INTO manifests (tag_rowid, manifest_json) VALUES (?, ?) 
 		ON CONFLICT(tag_rowid) DO UPDATE SET manifest_json = ?`
 	_, err = tx.Exec(query, tagRowID, manifestBytes, manifestBytes)
@@ -124,7 +120,6 @@ func (r *RegistryDB) PutManifest(repo string, tag string, manifestBytes string, 
 		return fmt.Errorf("failed to store manifest: %w", err)
 	}
 
-	// Store layers
 	query = `INSERT INTO layers (digest, media_type, size) VALUES (?, ?, ?) 
 		ON CONFLICT(digest) DO UPDATE SET media_type = ?, size = ?`
 	for _, layer := range manifest.Layers {
@@ -134,14 +129,12 @@ func (r *RegistryDB) PutManifest(repo string, tag string, manifestBytes string, 
 		}
 	}
 
-	// Remove existing manifest layers
 	purgeLayersQuery := `DELETE FROM manifest_layers WHERE manifest_rowid = (SELECT rowid FROM manifests WHERE tag_rowid = ?)`
 	_, err = tx.Exec(purgeLayersQuery, tagRowID)
 	if err != nil {
 		return fmt.Errorf("failed to delete existing manifest layers: %w", err)
 	}
 
-	// Get manifest rowid
 	var manifestRowID int64
 	query = `SELECT rowid FROM manifests WHERE tag_rowid = ?`
 	err = tx.Get(&manifestRowID, query, tagRowID)
@@ -149,7 +142,6 @@ func (r *RegistryDB) PutManifest(repo string, tag string, manifestBytes string, 
 		return fmt.Errorf("failed to get manifest rowid: %w", err)
 	}
 
-	// Store manifest layers association
 	for i, layer := range manifest.Layers {
 		_, err = tx.Exec(
 			`INSERT INTO manifest_layers (manifest_rowid, layer_digest, layer_index) VALUES (?, ?, ?)`,
@@ -162,7 +154,6 @@ func (r *RegistryDB) PutManifest(repo string, tag string, manifestBytes string, 
 		}
 	}
 
-	// Commit transaction
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
