@@ -174,12 +174,35 @@ func (r *Registry) putManifest(ctx context.Context, name string, reference strin
 		return err
 	}
 
+	// TODO: check why on earth we need to put the same thing in at least 3 places... come on OCI
 	metaKey := fmt.Sprintf("docker/registry/v2/repositories/%s/_manifests/tags/%s/current/link", name, reference)
 	slog.Debug("putting manifest meta", "metaKey", metaKey)
 
 	_, err = r.s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: &r.bucket,
 		Key:    &metaKey,
+		Body:   strings.NewReader(sha.String()),
+	})
+	if err != nil {
+		return err
+	}
+
+	metaIndexKey := fmt.Sprintf("docker/registry/v2/repositories/%s/_manifests/tags/%s/index/%s/%s/link", name, reference, sha.Algorithm(), sha.Hex())
+	slog.Debug("putting manifest index meta", "metaIndexKey", metaIndexKey)
+	_, err = r.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: &r.bucket,
+		Key:    &metaIndexKey,
+		Body:   strings.NewReader(sha.String()),
+	})
+	if err != nil {
+		return err
+	}
+
+	revisionsKey := fmt.Sprintf("docker/registry/v2/repositories/%s/_manifests/revisions/%s/%s/link", name, sha.Algorithm(), sha.Hex())
+	slog.Debug("putting manifest revisions meta", "revisionsKey", revisionsKey)
+	_, err = r.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: &r.bucket,
+		Key:    &revisionsKey,
 		Body:   strings.NewReader(sha.String()),
 	})
 	if err != nil {
