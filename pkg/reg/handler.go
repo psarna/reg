@@ -86,6 +86,9 @@ func NewRouter(ctx context.Context, registry *Registry) (*mux.Router, error) {
 	// end-13: Get upload status
 	apiRouter.Handle("/{name:.*}/blobs/uploads/{reference}", http.HandlerFunc(h.getUploadStatus)).Methods("GET")
 
+	// end-14: Cancel upload
+	apiRouter.Handle("/{name:.*}/blobs/uploads/{reference}", http.HandlerFunc(h.cancelUpload)).Methods("DELETE")
+
 	// custom endpoint 1: list all repositories
 	apiRouter.Handle("/repositories", http.HandlerFunc(http.HandlerFunc(h.listRepositories))).
 		Methods("GET")
@@ -143,7 +146,14 @@ func (h *Handler) getManifest(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) startUpload(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
-	uploadId := uuid.New()
+	uploadId := uuid.New().String()
+
+	err := h.registry.startUpload(r.Context(), name, uploadId)
+	if err != nil {
+		slog.Error("error starting upload", "error", err)
+		http.Error(w, fmt.Sprintf("error starting upload: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Location", fmt.Sprintf("v2/%s/blobs/uploads/%s", name, uploadId))
 	w.WriteHeader(http.StatusAccepted)
@@ -164,8 +174,35 @@ func parseContentRange(fRange string) (int64, int64, error) {
 func (h *Handler) startUploadWithDigest(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
-	// TODO: support: digest := vars["digest"]
-	uploadId := uuid.New()
+	digest := vars["digest"]
+	uploadId := uuid.New().String()
+
+	err := h.registry.startUpload(r.Context(), name, uploadId)
+	if err != nil {
+		slog.Error("error starting upload", "error", err)
+		http.Error(w, fmt.Sprintf("error starting upload: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if len(r.Header.Get("Content-Length")) > 0 && r.Header.Get("Content-Length") != "0" {
+		_, err := h.registry.uploadChunk(r.Context(), name, uploadId, 0, r.ContentLength, r.Body)
+		if err != nil {
+			slog.Error("error uploading chunk", "error", err)
+			http.Error(w, fmt.Sprintf("error uploading chunk: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		err = h.registry.completeUpload(r.Context(), name, uploadId, digest)
+		if err != nil {
+			slog.Error("error completing upload", "error", err)
+			http.Error(w, fmt.Sprintf("error completing upload: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/%s", name, digest))
+		w.WriteHeader(http.StatusCreated)
+		return
+	}
 
 	w.Header().Set("Location", fmt.Sprintf("v2/%s/blobs/uploads/%s", name, uploadId))
 	w.WriteHeader(http.StatusAccepted)
@@ -330,6 +367,35 @@ func (h *Handler) getReferrersFiltered(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getUploadStatus(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	name := vars["name"]
+	reference := vars["reference"]
+
+	_, _, uploadedSize, err := h.registry.getUploadSession(reference)
+	if err != nil {
+		slog.Error("error getting upload status", "error", err)
+		http.Error(w, fmt.Sprintf("error getting upload status: %v", err), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/uploads/%s", name, reference))
+	if uploadedSize > 0 {
+		w.Header().Set("Range", fmt.Sprintf("bytes=0-%d", uploadedSize-1))
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) cancelUpload(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	reference := vars["reference"]
+
+	err := h.registry.abortUpload(r.Context(), reference)
+	if err != nil {
+		slog.Error("error canceling upload", "error", err)
+		http.Error(w, fmt.Sprintf("error canceling upload: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
