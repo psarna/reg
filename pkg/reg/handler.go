@@ -121,6 +121,11 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(blobData)))
 			w.Header().Set("Docker-Content-Digest", digest)
 
+			if r.Method == "HEAD" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
 			_, err := w.Write(blobData)
 			if err != nil {
 				slog.Error("error writing blob from cache", "error", err)
@@ -141,6 +146,26 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("error getting blob redirect: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	if r.Method == "HEAD" {
+		exists, err := h.registry.hasBlob(r.Context(), digest)
+		if err != nil {
+			slog.Error("error checking blob existence", "error", err)
+			http.Error(w, fmt.Sprintf("error checking blob: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		if !exists {
+			http.Error(w, "blob not found", http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Docker-Content-Digest", digest)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	http.Redirect(w, r, presignedURL, http.StatusFound)
 }
 

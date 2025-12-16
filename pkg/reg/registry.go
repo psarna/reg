@@ -32,13 +32,17 @@ type Registry struct {
 	db       *RegistryDB
 }
 
+var forcePathStyle = func(o *s3.Options) {
+	o.UsePathStyle = true
+}
+
 func NewRegistry(ctx context.Context, bucket string) (*Registry, error) {
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("unable to load SDK config, %v", err)
 	}
 	cfg.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
-	s3Client := s3.NewFromConfig(cfg)
+	s3Client := s3.NewFromConfig(cfg, forcePathStyle)
 
 	db, err := initSQLite("registry.db")
 	if err != nil {
@@ -74,6 +78,9 @@ func (r *Registry) getBlobRedirect(ctx context.Context, name string, digest stri
 				Key:    &blobKey,
 			},
 			s3.WithPresignExpires(expires),
+			func(opts *s3.PresignOptions) {
+				opts.ClientOptions = append(opts.ClientOptions, forcePathStyle)
+			},
 		)
 	case http.MethodHead:
 		presignedReq, err = presignClient.PresignHeadObject(ctx,
@@ -82,6 +89,9 @@ func (r *Registry) getBlobRedirect(ctx context.Context, name string, digest stri
 				Key:    &blobKey,
 			},
 			s3.WithPresignExpires(expires),
+			func(opts *s3.PresignOptions) {
+				opts.ClientOptions = append(opts.ClientOptions, forcePathStyle)
+			},
 		)
 	default:
 		return "", fmt.Errorf("Method not allowed: %s", method)
@@ -92,6 +102,33 @@ func (r *Registry) getBlobRedirect(ctx context.Context, name string, digest stri
 	return presignedReq.URL, nil
 }
 
+func (r *Registry) hasBlob(ctx context.Context, digest string) (bool, error) {
+	algo, hex, found := strings.Cut(digest, ":")
+	if !found {
+		return false, fmt.Errorf("invalid digest format")
+	}
+
+	blobKey := fmt.Sprintf("docker/registry/v2/blobs/%s/%s/%s/data", algo, hex[0:2], hex)
+	_, err := r.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &r.bucket,
+		Key:    &blobKey,
+	}, forcePathStyle)
+
+	if err != nil {
+		var nsk *types.NoSuchKey
+		if errors.As(err, &nsk) {
+			return false, nil
+		}
+		var nse *types.NotFound
+		if errors.As(err, &nse) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return true, nil
+}
+
 func (r *Registry) getManifestSHA(ctx context.Context, repo string, tag string) (digest.Digest, error) {
 	metaKey := fmt.Sprintf("docker/registry/v2/repositories/%s/_manifests/tags/%s/current/link", repo, tag)
 	slog.Debug("getting manifest SHA", "repo", repo, "tag", tag, "metaKey", metaKey)
@@ -99,7 +136,7 @@ func (r *Registry) getManifestSHA(ctx context.Context, repo string, tag string) 
 	obj, err := r.s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &r.bucket,
 		Key:    &metaKey,
-	})
+	}, forcePathStyle)
 	if err != nil {
 		return "", fmt.Errorf("error getting sha: %w", err)
 	}
@@ -131,7 +168,7 @@ func (r *Registry) getManifest(ctx context.Context, name string, reference strin
 	obj, err := r.s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &r.bucket,
 		Key:    &blobKey,
-	})
+	}, forcePathStyle)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -167,7 +204,7 @@ func (r *Registry) putManifest(ctx context.Context, name string, reference strin
 		Bucket: &r.bucket,
 		Key:    &blobKey,
 		Body:   strings.NewReader(string(manifestBytes)),
-	})
+	}, forcePathStyle)
 	if err != nil {
 		return err
 	}
@@ -180,7 +217,7 @@ func (r *Registry) putManifest(ctx context.Context, name string, reference strin
 		Bucket: &r.bucket,
 		Key:    &metaKey,
 		Body:   strings.NewReader(sha.String()),
-	})
+	}, forcePathStyle)
 	if err != nil {
 		return err
 	}
@@ -191,7 +228,7 @@ func (r *Registry) putManifest(ctx context.Context, name string, reference strin
 		Bucket: &r.bucket,
 		Key:    &metaIndexKey,
 		Body:   strings.NewReader(sha.String()),
-	})
+	}, forcePathStyle)
 	if err != nil {
 		return err
 	}
@@ -202,7 +239,7 @@ func (r *Registry) putManifest(ctx context.Context, name string, reference strin
 		Bucket: &r.bucket,
 		Key:    &revisionsKey,
 		Body:   strings.NewReader(sha.String()),
-	})
+	}, forcePathStyle)
 	if err != nil {
 		return err
 	}
@@ -222,7 +259,7 @@ func (r *Registry) startUpload(ctx context.Context, name string, reference strin
 		Key:    &tempKey,
 	}
 
-	_, err := r.s3Client.CreateMultipartUpload(ctx, multipartInput)
+	_, err := r.s3Client.CreateMultipartUpload(ctx, multipartInput, forcePathStyle)
 	if err != nil {
 		return fmt.Errorf("failed to create multipart upload: %w", err)
 	}
@@ -245,7 +282,7 @@ func (r *Registry) uploadChunk(ctx context.Context, reference string, offset int
 			Key:    &tempKey,
 		}
 
-		multipartOutput, err := r.s3Client.CreateMultipartUpload(ctx, multipartInput)
+		multipartOutput, err := r.s3Client.CreateMultipartUpload(ctx, multipartInput, forcePathStyle)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create multipart upload: %w", err)
 		}
@@ -272,7 +309,7 @@ func (r *Registry) uploadChunk(ctx context.Context, reference string, offset int
 		Body:       bytes.NewReader(buf.Bytes()),
 	}
 
-	_, err = r.s3Client.UploadPart(ctx, uploadPartInput)
+	_, err = r.s3Client.UploadPart(ctx, uploadPartInput, forcePathStyle)
 	if err != nil {
 		return 0, fmt.Errorf("failed to upload part: %w", err)
 	}
@@ -324,7 +361,7 @@ func (r *Registry) completeUpload(ctx context.Context, reference string, dig str
 		},
 	}
 
-	_, err = r.s3Client.CompleteMultipartUpload(ctx, completeInput)
+	_, err = r.s3Client.CompleteMultipartUpload(ctx, completeInput, forcePathStyle)
 	if err != nil {
 		return fmt.Errorf("failed to complete multipart upload: %w", err)
 	}
@@ -343,7 +380,7 @@ func (r *Registry) completeUpload(ctx context.Context, reference string, dig str
 		CopySource: aws.String(fmt.Sprintf("%s/%s", r.bucket, s3Key)),
 	}
 
-	_, err = r.s3Client.CopyObject(ctx, copyInput)
+	_, err = r.s3Client.CopyObject(ctx, copyInput, forcePathStyle)
 	if err != nil {
 		return fmt.Errorf("failed to copy blob to final location: %w", err)
 	}
@@ -353,7 +390,7 @@ func (r *Registry) completeUpload(ctx context.Context, reference string, dig str
 		Key:    &s3Key,
 	}
 
-	_, err = r.s3Client.DeleteObject(ctx, deleteInput)
+	_, err = r.s3Client.DeleteObject(ctx, deleteInput, forcePathStyle)
 	if err != nil {
 		slog.Warn("failed to delete temporary upload file", "key", s3Key, "error", err)
 	}
@@ -384,7 +421,7 @@ func (r *Registry) abortUpload(ctx context.Context, uploadID string) error {
 			UploadId: &s3UploadID,
 		}
 
-		_, err = r.s3Client.AbortMultipartUpload(ctx, abortInput)
+		_, err = r.s3Client.AbortMultipartUpload(ctx, abortInput, forcePathStyle)
 		if err != nil {
 			slog.Warn("failed to abort multipart upload", "uploadID", s3UploadID, "error", err)
 		}
@@ -398,7 +435,7 @@ func (r *Registry) abortUpload(ctx context.Context, uploadID string) error {
 	return nil
 }
 
-func (r *Registry) cleanupStaleUploads(ctx context.Context) error {
+func (r *Registry) CleanupStaleUploads(ctx context.Context) error {
 	uploadIDs, err := r.db.GetStaleUploadSessions("-24 hours")
 	if err != nil {
 		return fmt.Errorf("failed to get stale upload sessions: %w", err)
@@ -429,7 +466,7 @@ func (r *Registry) listTags(ctx context.Context, name string) ([]string, error) 
 			Bucket:            &r.bucket,
 			Prefix:            &prefix,
 			ContinuationToken: continuationToken,
-		})
+		}, forcePathStyle)
 		if err != nil {
 			return nil, err
 		}
@@ -480,7 +517,7 @@ func (r *Registry) Bootstrap(ctx context.Context) error {
 			Bucket:            &r.bucket,
 			Prefix:            &prefix,
 			ContinuationToken: continuationToken,
-		})
+		}, forcePathStyle)
 		if err != nil {
 			return err
 		}
