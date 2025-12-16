@@ -3,8 +3,10 @@ package reg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -116,7 +118,7 @@ func (r *Registry) getManifest(ctx context.Context, name string, reference strin
 
 	sha, err := r.getManifestSHA(ctx, name, reference)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Join(err, fs.ErrNotExist)
 	}
 	hex := sha.Hex()
 	blobKey := fmt.Sprintf("docker/registry/v2/blobs/sha256/%s/%s/data", hex[0:2], hex)
@@ -143,6 +145,45 @@ func (r *Registry) getManifest(ctx context.Context, name string, reference strin
 	}
 
 	return &manifest, blobData, nil
+}
+
+func (r *Registry) putManifest(ctx context.Context, name string, reference string, manifestBytes []byte) error {
+	sha := digest.FromBytes(manifestBytes)
+	hex := sha.Hex()
+	blobKey := fmt.Sprintf("docker/registry/v2/blobs/sha256/%s/%s/data", hex[0:2], hex)
+	slog.Debug("putting manifest blob", "blobKey", blobKey)
+
+	var manifest v1.Manifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return fmt.Errorf("error unmarshalling manifest: %w", err)
+	}
+
+	_, err := r.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: &r.bucket,
+		Key:    &blobKey,
+		Body:   strings.NewReader(string(manifestBytes)),
+	})
+	if err != nil {
+		return err
+	}
+
+	metaKey := fmt.Sprintf("docker/registry/v2/repositories/%s/_manifests/tags/%s/current/link", name, reference)
+	slog.Debug("putting manifest meta", "metaKey", metaKey)
+
+	_, err = r.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: &r.bucket,
+		Key:    &metaKey,
+		Body:   strings.NewReader(sha.String()),
+	})
+	if err != nil {
+		return err
+	}
+
+	err = r.db.PutManifest(name, reference, string(manifestBytes), &manifest)
+	if err != nil {
+		slog.Error("error storing manifest in database", "error", err)
+	}
+	return nil
 }
 
 func (r *Registry) listTags(ctx context.Context, name string) ([]string, error) {
