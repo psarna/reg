@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -297,6 +298,58 @@ func (r *Registry) listTags(ctx context.Context, name string) ([]string, error) 
 	}
 
 	return repoTags, nil
+}
+
+func (r *Registry) listRepositories(ctx context.Context, continuationToken *string, n int) ([]string, *string, error) {
+	// For debugging purposes, let's always list from S3 for the time being
+	/*
+		readyRepos, err := r.db.ListRepositories(offset, n)
+		if err == nil && len(readyRepos) > 0 {
+			return readyRepos, nil
+		}
+	*/
+
+	// List up to n objects from offset offset
+	var repoNames []string
+
+	// list items until we find _manifests/ prefix, and then add the prefix to repoNames and continue until we find more
+	prefix := "docker/registry/v2/repositories/"
+	for len(repoNames) < n {
+		req, err := r.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            &r.bucket,
+			Prefix:            &prefix,
+			ContinuationToken: continuationToken,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, obj := range req.Contents {
+			if strings.Contains(*obj.Key, "/_manifests/tags/") {
+				repoName := strings.TrimPrefix(*obj.Key, prefix)
+				repoName = strings.Split(repoName, "/_manifests/tags/")[0]
+				if !slices.Contains(repoNames, repoName) {
+					repoNames = append(repoNames, repoName)
+				}
+			}
+			if len(repoNames) >= n {
+				break
+			}
+		}
+		if req.IsTruncated == nil || !*req.IsTruncated {
+			break
+		}
+		continuationToken = req.NextContinuationToken
+	}
+
+	// Same: for now, let's skip db
+	/*
+		err = r.db.PutRepositories(repoNames)
+		if err != nil {
+			slog.Error("error storing repositories in database", "error", err)
+		}
+	*/
+
+	return repoNames, continuationToken, nil
 }
 
 func (r *Registry) Close() error {

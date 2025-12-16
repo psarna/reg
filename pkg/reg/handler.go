@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -88,6 +90,10 @@ func NewRouter(ctx context.Context, bucket string) (*mux.Router, func() error, e
 
 	// end-13: Get upload status
 	apiRouter.Handle("/{name:.*}/blobs/uploads/{reference}", http.HandlerFunc(h.getUploadStatus)).Methods("GET")
+
+	// custom endpoint 1: list all repositories
+	apiRouter.Handle("/repositories", http.HandlerFunc(http.HandlerFunc(h.listRepositories))).
+		Methods("GET")
 
 	cleanup := func() error {
 		return registry.Close()
@@ -334,4 +340,39 @@ func (h *Handler) getReferrersFiltered(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getUploadStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) listRepositories(w http.ResponseWriter, r *http.Request) {
+	var continuationToken *string
+	if token := r.URL.Query().Get("continuationToken"); token != "" {
+		continuationToken = &token
+	}
+	nStr := r.URL.Query().Get("n")
+	n, err := strconv.Atoi(nStr)
+	if err != nil {
+		n = 64
+	}
+	repositories, continuationToken, err := h.registry.listRepositories(r.Context(), continuationToken, n)
+	if err != nil {
+		slog.Error("error listing repositories", "error", err)
+		http.Error(w, fmt.Sprintf("error listing repositories: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	marshaledRepos, err := json.Marshal(repositories)
+	if err != nil {
+		slog.Error("error marshalling repositories", "error", err)
+		http.Error(w, fmt.Sprintf("error marshalling repositories: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if continuationToken != nil {
+		w.Header().Set("Link", fmt.Sprintf("<%s/v2/repositories?continuationToken=%s&n=%d>; rel=\"next\"", r.URL.Scheme+"://"+r.URL.Host, url.QueryEscape(*continuationToken), n))
+	}
+	_, err = w.Write(marshaledRepos)
+	if err != nil {
+		slog.Error("error writing repositories response", "error", err)
+		http.Error(w, fmt.Sprintf("error writing repositories response: %v", err), http.StatusInternalServerError)
+		return
+	}
 }
