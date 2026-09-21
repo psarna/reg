@@ -204,7 +204,7 @@ func (r *RegistryDB) ListRepositories(continuationToken *string, n int) ([]strin
 		token := ""
 		continuationToken = &token
 	}
-	query := `SELECT repository FROM tags WHERE repository > ? LIMIT ?`
+	query := `SELECT DISTINCT repository FROM tags WHERE repository > ? ORDER BY repository LIMIT ?`
 	var repos []string
 	err := r.db.Select(&repos, query, continuationToken, n)
 	if err != nil {

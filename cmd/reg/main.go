@@ -28,8 +28,10 @@ func main() {
 
 	var bucket string
 	var bootstrap bool
+	var uiAddress string
 	serveCmd.Flags().StringVarP(&bucket, "bucket", "b", "", "Bucket name (required)")
 	serveCmd.Flags().BoolVarP(&bootstrap, "bootstrap", "B", false, "Bootstrap the registry from S3 (might take a few centuries for large registries)")
+	serveCmd.Flags().StringVar(&uiAddress, "ui", "", "Start the web dashboard on this address, for example localhost:8080")
 	serveCmd.MarkFlagRequired("bucket")
 
 	rootCmd.AddCommand(serveCmd)
@@ -59,6 +61,10 @@ func runServe(cmd *cobra.Command, args []string) {
 	if err != nil {
 		slog.Error("Failed to get bootstrap flag", "err", err)
 	}
+	uiAddress, err := cmd.Flags().GetString("ui")
+	if err != nil {
+		slog.Error("Failed to get ui flag", "err", err)
+	}
 
 	ctx := context.Background()
 	registry, err := reg.NewRegistry(ctx, bucket)
@@ -82,6 +88,16 @@ func runServe(cmd *cobra.Command, args []string) {
 			return
 		}
 		slog.Info("Bootstrap completed")
+	}
+
+	if uiAddress != "" {
+		ui := reg.NewUIHandler(registry)
+		go func() {
+			slog.Info("UI starting", "address", uiAddress)
+			if err := http.ListenAndServe(uiAddress, ui); err != nil {
+				slog.Error("UI stopped", "error", err)
+			}
+		}()
 	}
 
 	r, err := reg.NewRouter(ctx, registry)

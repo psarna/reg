@@ -25,3 +25,12 @@ This implementation's goals are as follows:
    allowing you to easily list all kinds of information, but also efficiently garbage-collect unused blobs.
 
 Follows [The Spec](https://github.com/opencontainers/distribution-spec/blob/main/spec.md).
+
+Start the optional SQLite-backed dashboard alongside the registry:
+
+```sh
+reg serve --bucket my-bucket --ui localhost:8080
+```
+
+Open `http://localhost:8080` to browse repositories, tags, manifests, layers,
+and active upload sessions.

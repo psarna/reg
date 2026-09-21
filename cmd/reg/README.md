@@ -22,3 +22,4 @@ This implementation's goals are as follows:
 4. As long as you only use a single instance of this registry for pushing, all data is trivially up-to-date,
    allowing you to easily list all kinds of information, but also efficiently garbage-collect unused blobs.
 
+Start the optional web dashboard with `reg serve --bucket my-bucket --ui localhost:8080`.
