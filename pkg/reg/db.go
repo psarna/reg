@@ -173,6 +173,18 @@ func (r *RegistryDB) ListTags(repo string) ([]string, error) {
 	return tags, nil
 }
 
+func (r *RegistryDB) ListTagsPage(repo, continuationToken string, n int) ([]string, *string, error) {
+	var tags []string
+	err := r.db.Select(&tags, `SELECT name FROM tags WHERE repository = ? AND name > ? ORDER BY name LIMIT ?`, repo, continuationToken, n)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to list tags: %w", err)
+	}
+	if len(tags) == 0 {
+		return nil, nil, nil
+	}
+	return tags, &tags[len(tags)-1], nil
+}
+
 func (r *RegistryDB) PutTags(repo string, tags []string) error {
 	tx, err := r.db.Beginx()
 	if err != nil {
@@ -378,6 +390,51 @@ func (r *RegistryDB) ListUploadSessions() ([]map[string]any, error) {
 		created_at, last_activity, total_size, uploaded_size 
 		FROM upload_sessions ORDER BY last_activity DESC`
 	rows, err := r.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list upload sessions: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var uploadID, repo, createdAt, lastActivity string
+		var digest, s3UploadID, s3Key sql.NullString
+		var totalSize, uploadedSize sql.NullInt64
+		if err := rows.Scan(&uploadID, &repo, &digest, &s3UploadID, &s3Key,
+			&createdAt, &lastActivity, &totalSize, &uploadedSize); err != nil {
+			return nil, fmt.Errorf("failed to scan upload session row: %w", err)
+		}
+		session := map[string]any{
+			"upload_id":     uploadID,
+			"repository":    repo,
+			"created_at":    createdAt,
+			"last_activity": lastActivity,
+		}
+		if digest.Valid {
+			session["digest"] = digest.String
+		}
+		if s3UploadID.Valid {
+			session["s3_upload_id"] = s3UploadID.String
+		}
+		if s3Key.Valid {
+			session["s3_key"] = s3Key.String
+		}
+		if totalSize.Valid {
+			session["total_size"] = totalSize.Int64
+		}
+		if uploadedSize.Valid {
+			session["uploaded_size"] = uploadedSize.Int64
+		}
+		result = append(result, session)
+	}
+	return result, nil
+}
+
+func (r *RegistryDB) ListUploadSessionsPage(offset, n int) ([]map[string]any, error) {
+	var result []map[string]any
+	query := `SELECT upload_id, repository, digest, s3_upload_id, s3_key,
+		created_at, last_activity, total_size, uploaded_size
+		FROM upload_sessions ORDER BY last_activity DESC LIMIT ? OFFSET ?`
+	rows, err := r.db.Query(query, n, offset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list upload sessions: %w", err)
 	}

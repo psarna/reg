@@ -1,6 +1,7 @@
 package reg
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -18,6 +19,11 @@ func TestUIShowsSQLiteData(t *testing.T) {
 		INSERT INTO layers(digest, media_type, size) VALUES ('sha256:abc', 'application/vnd.oci.image.layer.v1.tar', 2048);`); err != nil {
 		t.Fatal(err)
 	}
+	for i := 0; i < 26; i++ {
+		if _, err := db.db.Exec(`INSERT INTO tags(repository, name) VALUES (?, ?)`, "many", fmt.Sprintf("tag-%02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	handler := NewUIHandler(&Registry{db: db})
 	for _, test := range []struct {
@@ -27,11 +33,18 @@ func TestUIShowsSQLiteData(t *testing.T) {
 		{path: "/", want: "team/app"},
 		{path: "/repository?name=team%2Fapp", want: "latest"},
 		{path: "/manifest?repository=team%2Fapp&tag=latest", want: "schemaVersion"},
+		{path: "/tags", want: "Next 25"},
+		{path: "/insights", want: "Object counts"},
 	} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest("GET", test.path, nil))
 		if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), test.want) {
 			t.Fatalf("GET %s: status %d, body missing %q", test.path, recorder.Code, test.want)
 		}
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest("GET", "/tags", nil))
+	if strings.Contains(recorder.Body.String(), "tag-25") {
+		t.Fatal("first page contains more than 25 tags")
 	}
 }

@@ -23,3 +23,4 @@ This implementation's goals are as follows:
    allowing you to easily list all kinds of information, but also efficiently garbage-collect unused blobs.
 
 Start the optional web dashboard with `reg serve --bucket my-bucket --ui localhost:8080`.
+It pages lists at 25 entries, follows the system color preference, and includes an Insights view.
