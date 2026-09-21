@@ -513,6 +513,20 @@ func (r *Registry) bootstrap(ctx context.Context, tagsOnly bool) error {
 	prefix := "docker/registry/v2/repositories/"
 	var continuationToken *string
 	tagsByRepository := make(map[string][]string)
+	pendingTags := 0
+	flushedTags := 0
+	pages := 0
+	flushTags := func() error {
+		for repo, tags := range tagsByRepository {
+			if err := r.db.PutTags(repo, tags); err != nil {
+				return fmt.Errorf("failed to store tags for %s: %w", repo, err)
+			}
+			flushedTags += len(tags)
+		}
+		tagsByRepository = make(map[string][]string)
+		pendingTags = 0
+		return nil
+	}
 
 	group, ctx := errgroup.WithContext(ctx)
 	group.SetLimit(runtime.NumCPU() * 4)
@@ -530,16 +544,23 @@ func (r *Registry) bootstrap(ctx context.Context, tagsOnly bool) error {
 		if err != nil {
 			return err
 		}
+		pages++
+		if tagsOnly {
+			slog.Info("Bootstrap tags-only S3 page", "page", pages, "objects", len(req.Contents), "found", found, "flushed", flushedTags, "pending", pendingTags)
+		}
 		for _, obj := range req.Contents {
 			if strings.HasSuffix(*obj.Key, "current/link") {
 				found++
+				if tagsOnly && found%100 == 0 {
+					slog.Info("Bootstrap tags-only progress", "found", found, "flushed", flushedTags, "pending", pendingTags, "skipped", skipped)
+				}
 				noPrefix := strings.TrimPrefix(*obj.Key, "docker/registry/v2/repositories/")
 				repo, tag, ok := strings.Cut(noPrefix, "/_manifests/tags/")
 				if !ok {
 					continue
 				}
 				tag = strings.TrimSuffix(tag, "/current/link")
-				if r.db.Exists(repo, tag) {
+				if !tagsOnly && r.db.Exists(repo, tag) {
 					skipped++
 					if skipped%10000 == 5000 {
 						slog.Info("Bootstrap progress", "skipped", skipped)
@@ -548,6 +569,13 @@ func (r *Registry) bootstrap(ctx context.Context, tagsOnly bool) error {
 				}
 				if tagsOnly {
 					tagsByRepository[repo] = append(tagsByRepository[repo], tag)
+					pendingTags++
+					if pendingTags >= 1000 {
+						if err := flushTags(); err != nil {
+							return err
+						}
+						slog.Info("Bootstrap tags-only batch flushed", "found", found, "flushed", flushedTags)
+					}
 					continue
 				}
 				group.Go(func() error {
@@ -571,11 +599,12 @@ func (r *Registry) bootstrap(ctx context.Context, tagsOnly bool) error {
 		continuationToken = req.NextContinuationToken
 	}
 	if tagsOnly {
-		for repo, tags := range tagsByRepository {
-			if err := r.db.PutTags(repo, tags); err != nil {
-				return fmt.Errorf("failed to store tags for %s: %w", repo, err)
+		if pendingTags > 0 {
+			if err := flushTags(); err != nil {
+				return err
 			}
 		}
+		slog.Info("Bootstrap tags-only completed", "found", found, "flushed", flushedTags, "skipped", skipped)
 	}
 	return group.Wait()
 }

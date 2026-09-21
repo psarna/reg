@@ -88,6 +88,16 @@ func runServe(cmd *cobra.Command, args []string) {
 		os.Exit(0)
 	}()
 
+	if uiAddress != "" {
+		ui := reg.NewUIHandler(registry)
+		go func() {
+			slog.Info("UI starting", "address", uiAddress)
+			if err := http.ListenAndServe(uiAddress, ui); err != nil {
+				slog.Error("UI stopped", "error", err)
+			}
+		}()
+	}
+
 	if bootstrap || bootstrapTagsOnly {
 		bootstrapFn := registry.Bootstrap
 		if bootstrapTagsOnly {
@@ -98,16 +108,6 @@ func runServe(cmd *cobra.Command, args []string) {
 			return
 		}
 		slog.Info("Bootstrap completed")
-	}
-
-	if uiAddress != "" {
-		ui := reg.NewUIHandler(registry)
-		go func() {
-			slog.Info("UI starting", "address", uiAddress)
-			if err := http.ListenAndServe(uiAddress, ui); err != nil {
-				slog.Error("UI stopped", "error", err)
-			}
-		}()
 	}
 
 	r, err := reg.NewRouter(ctx, registry)
