@@ -502,8 +502,17 @@ func (r *Registry) listRepositories(_ context.Context, continuationToken *string
 }
 
 func (r *Registry) Bootstrap(ctx context.Context) error {
+	return r.bootstrap(ctx, false)
+}
+
+func (r *Registry) BootstrapTagsOnly(ctx context.Context) error {
+	return r.bootstrap(ctx, true)
+}
+
+func (r *Registry) bootstrap(ctx context.Context, tagsOnly bool) error {
 	prefix := "docker/registry/v2/repositories/"
 	var continuationToken *string
+	tagsByRepository := make(map[string][]string)
 
 	group, ctx := errgroup.WithContext(ctx)
 	group.SetLimit(runtime.NumCPU() * 4)
@@ -537,6 +546,10 @@ func (r *Registry) Bootstrap(ctx context.Context) error {
 					}
 					continue
 				}
+				if tagsOnly {
+					tagsByRepository[repo] = append(tagsByRepository[repo], tag)
+					continue
+				}
 				group.Go(func() error {
 					atomic.AddInt64(&processing, 1)
 					defer atomic.AddInt64(&processing, -1)
@@ -556,6 +569,13 @@ func (r *Registry) Bootstrap(ctx context.Context) error {
 			break
 		}
 		continuationToken = req.NextContinuationToken
+	}
+	if tagsOnly {
+		for repo, tags := range tagsByRepository {
+			if err := r.db.PutTags(repo, tags); err != nil {
+				return fmt.Errorf("failed to store tags for %s: %w", repo, err)
+			}
+		}
 	}
 	return group.Wait()
 }

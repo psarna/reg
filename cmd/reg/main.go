@@ -28,9 +28,11 @@ func main() {
 
 	var bucket string
 	var bootstrap bool
+	var bootstrapTagsOnly bool
 	var uiAddress string
 	serveCmd.Flags().StringVarP(&bucket, "bucket", "b", "", "Bucket name (required)")
 	serveCmd.Flags().BoolVarP(&bootstrap, "bootstrap", "B", false, "Bootstrap the registry from S3 (might take a few centuries for large registries)")
+	serveCmd.Flags().BoolVar(&bootstrapTagsOnly, "bootstrap-tags-only", false, "Bootstrap repository and tag metadata without fetching manifests")
 	serveCmd.Flags().StringVar(&uiAddress, "ui", "", "Start the web dashboard on this address, for example localhost:8080")
 	serveCmd.MarkFlagRequired("bucket")
 
@@ -61,6 +63,10 @@ func runServe(cmd *cobra.Command, args []string) {
 	if err != nil {
 		slog.Error("Failed to get bootstrap flag", "err", err)
 	}
+	bootstrapTagsOnly, err := cmd.Flags().GetBool("bootstrap-tags-only")
+	if err != nil {
+		slog.Error("Failed to get bootstrap-tags-only flag", "err", err)
+	}
 	uiAddress, err := cmd.Flags().GetString("ui")
 	if err != nil {
 		slog.Error("Failed to get ui flag", "err", err)
@@ -82,8 +88,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		os.Exit(0)
 	}()
 
-	if bootstrap {
-		if err := registry.Bootstrap(ctx); err != nil {
+	if bootstrap || bootstrapTagsOnly {
+		bootstrapFn := registry.Bootstrap
+		if bootstrapTagsOnly {
+			bootstrapFn = registry.BootstrapTagsOnly
+		}
+		if err := bootstrapFn(ctx); err != nil {
 			slog.Error("Failed to bootstrap registry", "err", err)
 			return
 		}

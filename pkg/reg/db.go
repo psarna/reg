@@ -230,6 +230,15 @@ func (r *RegistryDB) ListRepositories(continuationToken *string, n int) ([]strin
 	return repos, &repos[len(repos)-1], nil
 }
 
+func (r *RegistryDB) ListRepositoriesPage(search string, offset, n int) ([]string, error) {
+	var repositories []string
+	err := r.db.Select(&repositories, `SELECT DISTINCT repository FROM tags WHERE repository LIKE '%' || ? || '%' ORDER BY repository LIMIT ? OFFSET ?`, search, n, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list repositories: %w", err)
+	}
+	return repositories, nil
+}
+
 func (r *RegistryDB) Exists(repo string, tag string) bool {
 	query := `SELECT 1 FROM tags WHERE repository = ? AND name = ?`
 	var dummy int
@@ -315,6 +324,23 @@ func (r *RegistryDB) ListAllTags(continuationToken *string, n int) ([]map[string
 	return result, &nextToken, nil
 }
 
+func (r *RegistryDB) ListAllTagsPage(search string, offset, n int) ([]map[string]string, error) {
+	var result []map[string]string
+	rows, err := r.db.Query(`SELECT repository, name FROM tags WHERE repository LIKE '%' || ? || '%' OR name LIKE '%' || ? || '%' ORDER BY repository, name LIMIT ? OFFSET ?`, search, search, n, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tags: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var repository, tag string
+		if err := rows.Scan(&repository, &tag); err != nil {
+			return nil, fmt.Errorf("failed to scan tag row: %w", err)
+		}
+		result = append(result, map[string]string{"repository": repository, "tag": tag})
+	}
+	return result, nil
+}
+
 func (r *RegistryDB) ListLayers(continuationToken *string, n int) ([]map[string]any, *string, error) {
 	if continuationToken == nil {
 		token := ""
@@ -348,6 +374,24 @@ func (r *RegistryDB) ListLayers(continuationToken *string, n int) ([]map[string]
 
 	lastDigest := result[len(result)-1]["digest"].(string)
 	return result, &lastDigest, nil
+}
+
+func (r *RegistryDB) ListLayersPage(search string, offset, n int) ([]map[string]any, error) {
+	var result []map[string]any
+	rows, err := r.db.Query(`SELECT digest, media_type, size FROM layers WHERE digest LIKE '%' || ? || '%' OR media_type LIKE '%' || ? || '%' ORDER BY digest LIMIT ? OFFSET ?`, search, search, n, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list layers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var digest, mediaType string
+		var size int64
+		if err := rows.Scan(&digest, &mediaType, &size); err != nil {
+			return nil, fmt.Errorf("failed to scan layer row: %w", err)
+		}
+		result = append(result, map[string]any{"digest": digest, "media_type": mediaType, "size": size})
+	}
+	return result, nil
 }
 
 func (r *RegistryDB) ListManifests(continuationToken *string, n int) ([]map[string]string, *string, error) {

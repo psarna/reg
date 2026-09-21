@@ -32,6 +32,9 @@ Start the optional SQLite-backed dashboard alongside the registry:
 reg serve --bucket my-bucket --ui localhost:8080
 ```
 
+Use `--bootstrap-tags-only` to populate only repository and tag metadata from
+S3 without downloading manifest JSON or inspecting layer descriptors.
+
 Open `http://localhost:8080` to browse repositories, tags, manifests, layers,
 and active upload sessions. Lists page through 25 entries at a time. The UI
 follows the system color preference by default; use the theme button to save a
