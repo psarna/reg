@@ -32,6 +32,8 @@ type Registry struct {
 	db       *RegistryDB
 }
 
+const bootstrapProgressInterval = 50000
+
 var forcePathStyle = func(o *s3.Options) {
 	o.UsePathStyle = true
 }
@@ -545,13 +547,13 @@ func (r *Registry) bootstrap(ctx context.Context, tagsOnly bool) error {
 			return err
 		}
 		pages++
-		if tagsOnly {
+		if tagsOnly && pages%50 == 0 {
 			slog.Info("Bootstrap tags-only S3 page", "page", pages, "objects", len(req.Contents), "found", found, "flushed", flushedTags, "pending", pendingTags)
 		}
 		for _, obj := range req.Contents {
 			if strings.HasSuffix(*obj.Key, "current/link") {
 				found++
-				if tagsOnly && found%100 == 0 {
+				if tagsOnly && found%bootstrapProgressInterval == 0 {
 					slog.Info("Bootstrap tags-only progress", "found", found, "flushed", flushedTags, "pending", pendingTags, "skipped", skipped)
 				}
 				noPrefix := strings.TrimPrefix(*obj.Key, "docker/registry/v2/repositories/")
@@ -574,7 +576,6 @@ func (r *Registry) bootstrap(ctx context.Context, tagsOnly bool) error {
 						if err := flushTags(); err != nil {
 							return err
 						}
-						slog.Info("Bootstrap tags-only batch flushed", "found", found, "flushed", flushedTags)
 					}
 					continue
 				}
